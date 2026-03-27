@@ -8,11 +8,13 @@ import type { TranscriptSegment } from './segment';
 
 /** Messages sent TO the background service worker (from popup or offscreen). */
 export type BackgroundRequestMessage =
-  | { target: 'background'; type: 'START_FROM_POPUP' }
+  | { target: 'background'; type: 'START_FROM_POPUP'; resumeSegments?: TranscriptSegment[] }
   | { target: 'background'; type: 'STOP_FROM_POPUP' }
   | { target: 'background'; type: 'GET_STATUS' }
   | { target: 'background'; type: 'PIPELINE_ERROR'; message: string }
-  | { target: 'background'; type: 'TRANSCRIPTION_SEGMENT'; text: string };
+  | { target: 'background'; type: 'TRANSCRIPTION_SEGMENT'; text: string }
+  | { target: 'background'; type: 'VAD_SPEECH_START' }
+  | { target: 'background'; type: 'VAD_SPEECH_END' };
 
 /** Messages sent TO the offscreen document (from background). */
 export type OffscreenRequestMessage =
@@ -29,4 +31,6 @@ export type ContentScriptMessage =
   | { type: 'NEW_SEGMENT'; segment: TranscriptSegment }
   | { type: 'TRANSLATION_RESULT'; segmentId: number; translatedText: string }
   | { type: 'TRANSLATION_STATE'; isActive: boolean }
-  | { type: 'PIPELINE_ERROR'; message: string };
+  | { type: 'PIPELINE_ERROR'; message: string }
+  | { type: 'VAD_SPEECH_START' }
+  | { type: 'VAD_SPEECH_END' };

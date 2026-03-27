@@ -9,4 +9,6 @@ export type StoredSettings = {
   systemPrompt?: string;
   whisperModel?: string;
   geminiModel?: string;
+  sourceLanguage?: string;
+  targetLanguage?: string;
 };

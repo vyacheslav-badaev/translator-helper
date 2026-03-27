@@ -47,7 +47,7 @@ export async function transcribeAudioChunk(
     const formData = new FormData();
     formData.append(
       'file',
-      new File([blob], 'chunk.webm', { type: 'audio/webm' })
+      new File([blob], 'chunk.wav', { type: 'audio/wav' })
     );
     formData.append('model', model);
     if (language) {
@@ -57,13 +57,21 @@ export async function transcribeAudioChunk(
       formData.append('prompt', prompt);
     }
 
-    const response = await fetch(GROQ_TRANSCRIPTION_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: formData
-    });
+    let response: Response;
+    try {
+      response = await fetch(GROQ_TRANSCRIPTION_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: formData
+      });
+    } catch (error) {
+      const errorMsg =
+        error instanceof Error ? error.message : 'Network request failed';
+      debugError('Groq', `Fetch failed: ${errorMsg}`);
+      throw new Error(`Failed to connect to Groq API: ${errorMsg}`);
+    }
 
     // Handle 429 rate limit with retry.
     if (response.status === 429 && attempt < MAX_RETRIES) {
@@ -81,14 +89,20 @@ export async function transcribeAudioChunk(
       continue;
     }
 
-    const data = (await response.json()) as GroqTranscriptionResponse;
-
+    // Check response status before parsing JSON to catch network/CORS errors.
     if (!response.ok) {
-      const errorMsg =
-        data.error?.message || `Groq API request failed (${response.status})`;
+      let errorMsg = `Groq API request failed (${response.status})`;
+      try {
+        const data = (await response.json()) as GroqTranscriptionResponse;
+        errorMsg = data.error?.message || errorMsg;
+      } catch {
+        // JSON parse failed, use generic error message.
+      }
       debugError('Groq', `Transcription failed: ${errorMsg}`);
       throw new Error(errorMsg);
     }
+
+    const data = (await response.json()) as GroqTranscriptionResponse;
 
     const text = data.text?.trim();
 

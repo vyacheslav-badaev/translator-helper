@@ -11,7 +11,9 @@
 import {
   DEFAULT_GEMINI_MODEL,
   DEFAULT_SYSTEM_PROMPT,
-  DEFAULT_WHISPER_MODEL
+  DEFAULT_WHISPER_MODEL,
+  DEFAULT_SOURCE_LANGUAGE,
+  DEFAULT_TARGET_LANGUAGE
 } from '../constants';
 import type { StoredSettings } from '../types/settings';
 import { debugLog, debugWarn } from '../utils/debug';
@@ -22,7 +24,9 @@ const ALL_FIELDS: Array<keyof StoredSettings> = [
   'geminiApiKey',
   'systemPrompt',
   'whisperModel',
-  'geminiModel'
+  'geminiModel',
+  'sourceLanguage',
+  'targetLanguage'
 ];
 
 /**
@@ -78,7 +82,25 @@ export async function loadSettings(): Promise<StoredSettings> {
     geminiModel
   });
 
-  return { groqApiKey, geminiApiKey, systemPrompt, whisperModel, geminiModel };
+  const sourceLanguage =
+    typeof values.sourceLanguage === 'string'
+      ? values.sourceLanguage
+      : DEFAULT_SOURCE_LANGUAGE;
+
+  const targetLanguage =
+    typeof values.targetLanguage === 'string'
+      ? values.targetLanguage
+      : DEFAULT_TARGET_LANGUAGE;
+
+  return {
+    groqApiKey,
+    geminiApiKey,
+    systemPrompt,
+    whisperModel,
+    geminiModel,
+    sourceLanguage,
+    targetLanguage
+  };
 }
 
 /**
@@ -97,7 +119,9 @@ export async function saveSettings(settings: StoredSettings) {
     geminiApiKey: settings.geminiApiKey || '',
     systemPrompt: settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
     whisperModel: settings.whisperModel || DEFAULT_WHISPER_MODEL,
-    geminiModel: settings.geminiModel || DEFAULT_GEMINI_MODEL
+    geminiModel: settings.geminiModel || DEFAULT_GEMINI_MODEL,
+    sourceLanguage: settings.sourceLanguage || DEFAULT_SOURCE_LANGUAGE,
+    targetLanguage: settings.targetLanguage || DEFAULT_TARGET_LANGUAGE
   });
 
   debugLog('Settings', 'Settings saved successfully');

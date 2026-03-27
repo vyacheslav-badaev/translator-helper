@@ -3,9 +3,31 @@
  * (background service worker, offscreen document, content script, popup).
  */
 
+export const SOURCE_LANGUAGES = [
+  { id: 'auto', label: 'Auto-Detect' },
+  { id: 'en', label: 'English' },
+  { id: 'es', label: 'Spanish' },
+  { id: 'de', label: 'German' },
+  { id: 'fr', label: 'French' },
+  { id: 'it', label: 'Italian' },
+  { id: 'ru', label: 'Russian' }
+];
+
+export const TARGET_LANGUAGES = [
+  { id: 'ru', label: 'Russian' },
+  { id: 'uk', label: 'Ukrainian' },
+  { id: 'en', label: 'English' },
+  { id: 'es', label: 'Spanish' },
+  { id: 'de', label: 'German' },
+  { id: 'fr', label: 'French' }
+];
+
+export const DEFAULT_SOURCE_LANGUAGE = 'auto';
+export const DEFAULT_TARGET_LANGUAGE = 'ru';
+
 /** Default system prompt sent to Gemini when user has not set a custom one. */
 export const DEFAULT_SYSTEM_PROMPT =
-  'You are a real-time translator. Translate the text to Russian. Output ONLY the translated text without any other comments, quotes, or markdown.';
+  'You are a professional real-time translator. Translate the following text from {{source}} to {{target}}. Output ONLY the translated text without any other comments, quotes, or markdown formatting. Keep the translated text smooth and natural.';
 
 /** How long (ms) an error toast stays visible before auto-dismissing. */
 export const ERROR_TIMEOUT_MS = 5000;
@@ -70,27 +92,6 @@ export const WHISPER_MODELS = [
     description: '216× real-time speed'
   }
 ] as const;
-
-// ---------------------------------------------------------------------------
-// VAD-based smart chunking
-// Instead of fixed-interval chunks, audio is split at natural speech pauses
-// detected via RMS volume analysis through Web Audio API AnalyserNode.
-// ---------------------------------------------------------------------------
-
-/** How often (ms) the VAD polls the AnalyserNode for RMS volume. */
-export const VAD_POLL_INTERVAL_MS = 100;
-
-/** RMS value below this threshold is considered silence (range 0–1). */
-export const SILENCE_VOLUME_THRESHOLD = 0.05;
-
-/** Continuous silence duration (ms) required to trigger a chunk flush. */
-export const SILENCE_DURATION_MS = 2000;
-
-/** Minimum chunk duration (ms) — prevents sending micro-fragments. */
-export const MIN_CHUNK_MS = 3000;
-
-/** Maximum chunk duration (ms) — forces a flush even without silence. */
-export const MAX_CHUNK_MS = 10000;
 
 // ---------------------------------------------------------------------------
 // Auto-shutdown on inactivity

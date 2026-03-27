@@ -5,13 +5,48 @@ import { crx } from '@crxjs/vite-plugin';
 import manifest from './manifest.json';
 import tailwindcss from '@tailwindcss/vite';
 
+import { viteStaticCopy } from 'vite-plugin-static-copy';
+
 // Debug mode: set via `VITE_DEBUG=true` env variable.
 // When false, all debugLog/debugWarn calls are tree-shaken out of production bundle.
 const isDebug = process.env.VITE_DEBUG === 'true';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss(), crx({ manifest })],
+  plugins: [
+    react(),
+    tailwindcss(),
+    crx({ manifest }),
+    viteStaticCopy({
+      targets: [
+        {
+          src: 'node_modules/@ricky0123/vad-web/dist/vad.worklet.bundle.min.js',
+          dest: '.',
+          rename: { stripBase: true }
+        },
+        {
+          src: 'node_modules/@ricky0123/vad-web/dist/silero_vad_v5.onnx',
+          dest: '.',
+          rename: { stripBase: true }
+        },
+        {
+          src: 'node_modules/@ricky0123/vad-web/dist/silero_vad_legacy.onnx',
+          dest: '.',
+          rename: { stripBase: true }
+        },
+        {
+          src: 'node_modules/onnxruntime-web/dist/*.wasm',
+          dest: '.',
+          rename: { stripBase: true }
+        },
+        {
+          src: 'node_modules/onnxruntime-web/dist/*.mjs',
+          dest: '.',
+          rename: { stripBase: true }
+        }
+      ]
+    })
+  ],
   define: {
     __DEBUG__: JSON.stringify(isDebug)
   },

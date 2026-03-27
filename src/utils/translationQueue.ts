@@ -11,6 +11,7 @@
  */
 
 import { translateText } from '../api/gemini';
+import { GEMINI_MODELS } from '../constants';
 import { debugLog, debugWarn, debugError } from './debug';
 
 /** How many segments to batch into one Gemini call. */
@@ -43,6 +44,8 @@ export class TranslationQueue {
   private apiKey = '';
   private prompt = '';
   private model = '';
+  private fallbackModels: string[] = [];
+  private currentFallbackIndex = 0;
   private contextBuffer: string[] = [];
 
   private onTranslation: TranslationCallback;
@@ -58,6 +61,16 @@ export class TranslationQueue {
     this.apiKey = apiKey;
     this.prompt = prompt;
     this.model = model;
+    this.currentFallbackIndex = 0;
+
+    if (model.includes('flash')) {
+      const allFlash = GEMINI_MODELS.filter((m) => m.id.includes('flash')).map(
+        (m) => m.id
+      );
+      this.fallbackModels = [model, ...allFlash.filter((m) => m !== model)];
+    } else {
+      this.fallbackModels = [model];
+    }
   }
 
   /** Add a segment to the translation queue. */
@@ -100,18 +113,22 @@ export class TranslationQueue {
       );
 
       try {
+        const currentModelToUse =
+          this.fallbackModels[this.currentFallbackIndex] || this.model;
+
         if (batch.length === 1) {
           // Single segment — direct translation.
           const result = await translateText(
             batch[0].text,
             this.apiKey,
             this.prompt,
-            this.model,
+            currentModelToUse,
             this.contextBuffer.length > 0 ? [...this.contextBuffer] : undefined
           );
 
           this.lastCallTime = Date.now();
           this.backoffMs = INITIAL_BACKOFF_MS; // reset backoff on success
+          this.currentFallbackIndex = 0; // reset fallback on success
 
           if (result) {
             this.contextBuffer.push(batch[0].text);
@@ -132,12 +149,13 @@ export class TranslationQueue {
             numberedInput,
             this.apiKey,
             batchPrompt,
-            this.model,
+            currentModelToUse,
             this.contextBuffer.length > 0 ? [...this.contextBuffer] : undefined
           );
 
           this.lastCallTime = Date.now();
           this.backoffMs = INITIAL_BACKOFF_MS;
+          this.currentFallbackIndex = 0;
 
           if (result) {
             // Parse numbered results.
@@ -160,19 +178,47 @@ export class TranslationQueue {
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
 
-        // Check for rate limit (429).
-        if (errMsg.includes('429') || errMsg.toLowerCase().includes('rate')) {
+        debugWarn(
+          'TranslationQueue',
+          `Translation failed on model ${this.fallbackModels[this.currentFallbackIndex] || this.model}: ${errMsg}`
+        );
+
+        // Try falling back to another flash model before backing off or failing.
+        // We only fallback if we haven't exhausted our fallback options.
+        if (this.currentFallbackIndex < this.fallbackModels.length - 1) {
+          this.currentFallbackIndex++;
           debugWarn(
             'TranslationQueue',
-            `Rate limited, backing off ${this.backoffMs}ms`
+            `Falling back to next model: ${this.fallbackModels[this.currentFallbackIndex]}`
           );
-          // Put items back at the front of the queue.
+          // Put items back at the front of the queue to retry immediately with next model
+          this.queue.unshift(...batch);
+          continue;
+        }
+
+        // Check for rate limit (429) or overloaded/unavailable (503/500).
+        if (
+          errMsg.includes('429') ||
+          errMsg.includes('503') ||
+          errMsg.includes('500') ||
+          errMsg.toLowerCase().includes('rate')
+        ) {
+          debugWarn(
+            'TranslationQueue',
+            `Rate limited or unavailable after model fallbacks, backing off ${this.backoffMs}ms`
+          );
+          // Put items back.
           this.queue.unshift(...batch);
           await this.sleep(this.backoffMs);
           if (loopSession !== this.sessionId) break; // aborted during backoff
           this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
+          // Reset fallback index to try the preferred models again after backoff
+          this.currentFallbackIndex = 0;
         } else {
-          debugError('TranslationQueue', `Translation failed: ${errMsg}`);
+          debugError(
+            'TranslationQueue',
+            `Translation critically failed: ${errMsg}`
+          );
           this.onError(errMsg);
         }
       }

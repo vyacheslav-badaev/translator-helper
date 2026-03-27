@@ -39,28 +39,33 @@ export async function translateText(
     `Translating (model=${model}): "${input.substring(0, 60)}${input.length > 60 ? '…' : ''}"`
   );
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-  // Build the full user message: prompt + optional context + current text.
-  let userMessage = prompt;
+  // Build system instruction with prompt + context (128K+ token capacity)
+  let systemInstruction = prompt;
 
   if (previousTranscriptions && previousTranscriptions.length > 0) {
     const context = previousTranscriptions.join('\n');
-    userMessage += `\n\nPrevious context (for reference only, do NOT translate this again):\n${context}`;
+    systemInstruction += `\n\nPrevious context (for reference only, do NOT translate this again):\n${context}`;
     debugLog(
       'Gemini',
       `Context buffer attached (${previousTranscriptions.length} phrases)`
     );
   }
 
-  userMessage += `\n\nOriginal Text: ${input}`;
+  // Contents contains only the original text for clean API usage
+  const userMessage = `Original Text: ${input}`;
 
   const response = await fetch(url, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey
     },
     body: JSON.stringify({
+      system_instruction: {
+        parts: [{ text: systemInstruction }]
+      },
       contents: [
         {
           role: 'user',

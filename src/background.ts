@@ -22,11 +22,15 @@ import type {
 } from './types/messages';
 import type { TranscriptSegment } from './types/segment';
 import { loadSettings } from './storage/settings';
+import { saveSession } from './storage/db';
+import type { SessionData } from './storage/db';
 import { TranslationQueue } from './utils/translationQueue';
 import {
   DEFAULT_GEMINI_MODEL,
   DEFAULT_SYSTEM_PROMPT,
-  IDLE_TIMEOUT_MS
+  IDLE_TIMEOUT_MS,
+  SOURCE_LANGUAGES,
+  TARGET_LANGUAGES
 } from './constants';
 import { debugLog, debugWarn, debugError } from './utils/debug';
 
@@ -42,11 +46,21 @@ let nextSegmentId = 1;
 /** Timer ID for auto-shutdown on inactivity. */
 let idleTimerId: ReturnType<typeof setTimeout> | null = null;
 
+/** Holds segments for the current active recording session. */
+let currentSessionSegments: TranscriptSegment[] = [];
+let currentSourceLang = 'auto';
+let currentTargetLang = 'ru';
+
 /** Translation queue with rate limiting and batching. */
 const translationQueue = new TranslationQueue(
   // onTranslation callback — broadcast translated text to content scripts.
   (segmentId: number, translatedText: string) => {
     debugLog('Background', `Translation ready for segment #${segmentId}`);
+    const seg = currentSessionSegments.find((s) => s.id === segmentId);
+    if (seg) {
+      seg.translatedText = translatedText;
+      seg.isTranslating = false;
+    }
     void broadcastToActiveTabs({
       type: 'TRANSLATION_RESULT',
       segmentId,
@@ -90,7 +104,7 @@ chrome.commands.onCommand.addListener((command: string) => {
  * Starts or stops the translation pipeline.
  * Protected by `toggleInProgress` to avoid overlapping async operations.
  */
-async function handleToggleTranslation() {
+async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
   if (toggleInProgress) {
     debugWarn('Background', 'Toggle already in progress, ignoring');
     return;
@@ -133,13 +147,49 @@ async function handleToggleTranslation() {
         );
       }
 
+      const sourceId = settings.sourceLanguage || 'auto';
+      const targetId = settings.targetLanguage || 'ru';
+      const sourceName =
+        SOURCE_LANGUAGES.find((l) => l.id === sourceId)?.label || 'Auto-Detect';
+      const targetName =
+        TARGET_LANGUAGES.find((l) => l.id === targetId)?.label || 'Russian';
+
+      const basePrompt = settings.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+      const finalPrompt = basePrompt
+        .replace(/\{\{source\}\}/g, sourceName)
+        .replace(/\{\{target\}\}/g, targetName);
+
+      currentSourceLang = sourceId;
+      currentTargetLang = targetId;
+
       // 5. Configure the translation queue with Gemini settings.
       translationQueue.configure(
         settings.geminiApiKey,
-        settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+        finalPrompt,
         settings.geminiModel || DEFAULT_GEMINI_MODEL
       );
-      nextSegmentId = 1;
+
+      if (resumeSegments && resumeSegments.length > 0) {
+        currentSessionSegments = [...resumeSegments];
+        nextSegmentId = Math.max(...resumeSegments.map((s) => s.id)) + 1;
+        // Pre-fill context buffer with last few segments for continuity.
+        // TranslationQueue isn't exposing contextBuffer directly, so we just let it build naturally
+        // But we must broadcast these old segments to content scripts
+        for (const seg of resumeSegments) {
+          await broadcastToActiveTabs({ type: 'NEW_SEGMENT', segment: seg });
+          if (seg.translatedText && !seg.isTranslating) {
+            await broadcastToActiveTabs({
+              type: 'TRANSLATION_RESULT',
+              segmentId: seg.id,
+              translatedText: seg.translatedText
+            });
+          }
+        }
+      } else {
+        currentSessionSegments = [];
+        nextSegmentId = 1;
+      }
+
       resetIdleTimer();
 
       // 6. Tell the offscreen document to start recording with settings.
@@ -164,6 +214,26 @@ async function handleToggleTranslation() {
       clearIdleTimer();
       isTranslating = false;
       debugLog('Background', 'Translation stopped successfully');
+
+      // Save session to history
+      if (currentSessionSegments.length > 0) {
+        const titleText =
+          currentSessionSegments[0].originalText.trim() || 'Empty Session';
+        const firstWords = titleText.split(/\s+/).slice(0, 5).join(' ');
+        const session: SessionData = {
+          id: Date.now().toString(),
+          timestamp: Date.now(),
+          title:
+            firstWords + (titleText.length > firstWords.length ? '...' : ''),
+          sourceLanguage: currentSourceLang,
+          targetLanguage: currentTargetLang,
+          segments: [...currentSessionSegments]
+        };
+        saveSession(session).catch((e) =>
+          debugError('Background', 'Failed to save session', e)
+        );
+        currentSessionSegments = [];
+      }
     }
   } catch (error) {
     debugError('Background', 'Failed to toggle translation state:', error);
@@ -341,6 +411,7 @@ chrome.runtime.onMessage.addListener(
           isTranslating: true,
           timestamp: Date.now()
         };
+        currentSessionSegments.push(segment);
         debugLog(
           'Background',
           `New segment #${segment.id}: "${request.text.substring(0, 50)}…"`
@@ -359,6 +430,15 @@ chrome.runtime.onMessage.addListener(
         return;
       }
 
+      if (
+        request.type === 'VAD_SPEECH_START' ||
+        request.type === 'VAD_SPEECH_END'
+      ) {
+        await broadcastToActiveTabs({ type: request.type });
+        sendResponse({ status: 'forwarded' });
+        return;
+      }
+
       if (toggleInProgress) {
         debugWarn('Background', 'Toggle in progress, responding busy');
         sendResponse({ status: 'busy' });
@@ -370,7 +450,7 @@ chrome.runtime.onMessage.addListener(
           sendResponse({ status: 'noop', isTranslating });
           return;
         }
-        await handleToggleTranslation();
+        await handleToggleTranslation(request.resumeSegments);
         sendResponse({
           status: isTranslating ? 'started' : 'error',
           isTranslating
