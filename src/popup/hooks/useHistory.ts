@@ -56,7 +56,8 @@ export function useHistory({
 
   useEffect(() => {
     if (activeTab === 'history') {
-      void loadHistory();
+      // Wrap in setTimeout to avoid synchronous setState in effect body
+      setTimeout(() => void loadHistory(), 0);
     }
   }, [activeTab, loadHistory, isActive]);
 
