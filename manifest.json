@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Real-Time Translator",
+  "version": "1.0.0",
+  "description": "Real-time translator using Groq and Gemini.",
+  "permissions": ["storage", "activeTab", "tabs", "tabCapture", "offscreen"],
+  "host_permissions": [
+    "https://api.groq.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.ts",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "index.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content.tsx"]
+    }
+  ],
+  "commands": {
+    "toggle-translation": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Toggle real-time translation"
+    }
+  }
+}

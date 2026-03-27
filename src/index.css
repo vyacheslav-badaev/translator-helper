@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary-500: #3b82f6;
+  --color-primary-600: #2563eb;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 w-[350px] min-h-[400px];
+}
