@@ -15,8 +15,11 @@ import { debugLog } from './debug';
 /** Minimum number of words before we emit a sentence even without punctuation. */
 const MAX_FRAGMENT_WORDS = 25;
 
-/** Regex that splits on sentence-ending punctuation followed by whitespace or EOL. */
-const SENTENCE_BOUNDARY = /(?<=[.!?])\s+/;
+/** 
+ * Regex that splits on sentence-ending punctuation followed by whitespace or EOL,
+ * but ignores common abbreviations like Mr., Dr., e.g., etc. using negative lookbehinds. 
+ */
+const SENTENCE_BOUNDARY = /(?<=[.!?])(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Rev|St|Sgt|Capt|Gen|Sen|Rep|Gov|Fig|Eq|vs|e\.g|i\.e)\.)\s+(?=[A-ZА-ЯЁ])/;
 
 export class SentenceBuffer {
   private buffer = '';

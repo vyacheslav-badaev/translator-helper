@@ -12,7 +12,7 @@ export type BackgroundRequestMessage =
   | { target: 'background'; type: 'STOP_FROM_POPUP' }
   | { target: 'background'; type: 'GET_STATUS' }
   | { target: 'background'; type: 'PIPELINE_ERROR'; message: string }
-  | { target: 'background'; type: 'TRANSCRIPTION_SEGMENT'; text: string }
+  | { target: 'background'; type: 'TRANSCRIPTION_SEGMENT'; text: string; durationMs?: number }
   | { target: 'background'; type: 'VAD_SPEECH_START' }
   | { target: 'background'; type: 'VAD_SPEECH_END' };
 
@@ -30,7 +30,16 @@ export type OffscreenRequestMessage =
 export type ContentScriptMessage =
   | { type: 'NEW_SEGMENT'; segment: TranscriptSegment }
   | { type: 'TRANSLATION_RESULT'; segmentId: number; translatedText: string }
-  | { type: 'TRANSLATION_STATE'; isActive: boolean }
+  | { type: 'TRANSLATION_STATE'; isActive: boolean; sourceLang?: string; targetLang?: string }
   | { type: 'PIPELINE_ERROR'; message: string }
+  | {
+      type: 'ANALYTICS_UPDATE';
+      metrics: {
+        queueLength: number;
+        chunksProcessed: number;
+        avgTranscribeMs: number;
+        avgTranslateMs: number;
+      };
+    }
   | { type: 'VAD_SPEECH_START' }
   | { type: 'VAD_SPEECH_END' };

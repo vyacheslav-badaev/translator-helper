@@ -137,9 +137,9 @@ async function startRecording(streamId: string) {
       // Aggressive optimization for very fast dialogue segments.
       positiveSpeechThreshold: 0.8,
       negativeSpeechThreshold: 0.45,
-      minSpeechMs: 200,
-      preSpeechPadMs: 150,
-      redemptionMs: 300,
+      minSpeechMs: 150,
+      preSpeechPadMs: 100,
+      redemptionMs: 200,
       submitUserSpeechOnPause: true,
       onVADMisfire: () => {
         debugLog('VAD', 'VAD misfire detected');
@@ -267,6 +267,7 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
         ? whisperPromptBuffer.slice(-3).join(' ')
         : undefined;
 
+    const startMs = performance.now();
     const transcription = await transcribeAudioChunk(
       blob,
       cachedSettings.groqApiKey,
@@ -274,6 +275,8 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
       whisperLanguage,
       whisperPrompt
     );
+    const durationMs = performance.now() - startMs;
+
     if (!transcription || !isCurrentSession(sessionId)) {
       return;
     }
@@ -287,7 +290,14 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
 
     for (const sentence of sentences) {
       if (!isCurrentSession(sessionId)) break;
-      await sendSegment(sentence);
+      debugLog('Offscreen', `Sending segment: "${sentence.substring(0, 60)}…" (${Math.round(durationMs)}ms)`);
+      const msg: BackgroundRequestMessage = {
+        target: 'background',
+        type: 'TRANSCRIPTION_SEGMENT',
+        text: sentence,
+        durationMs
+      };
+      await chrome.runtime.sendMessage(msg).catch(() => undefined);
     }
   } catch (error) {
     debugError('Offscreen', 'Pipeline error during chunk processing:', error);

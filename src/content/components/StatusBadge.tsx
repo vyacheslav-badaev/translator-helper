@@ -10,7 +10,6 @@ import React from 'react';
 
 interface StatusBadgeProps {
   isActive: boolean;
-  isSpeaking: boolean;
   badgePhase: 'visible' | 'fading' | 'hidden';
   position: { x: number; y: number };
   onPointerDown: (e: React.PointerEvent) => void;
@@ -20,7 +19,6 @@ interface StatusBadgeProps {
 
 export function StatusBadge({
   isActive,
-  isSpeaking,
   badgePhase,
   position,
   onPointerDown,
@@ -57,20 +55,6 @@ export function StatusBadge({
       }}
     >
       {isActive ? 'Translator ON' : 'Translator OFF'}
-      {isSpeaking && (
-        <span
-          style={{
-            display: 'inline-block',
-            width: 6,
-            height: 6,
-            background: '#ef4444',
-            borderRadius: '50%',
-            marginLeft: 8,
-            verticalAlign: 'middle',
-            animation: 'tp-pulse 1.5s infinite ease-in-out'
-          }}
-        />
-      )}
     </div>
   );
 }

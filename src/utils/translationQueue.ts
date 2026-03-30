@@ -15,10 +15,10 @@ import { GEMINI_MODELS } from '../constants';
 import { debugLog, debugWarn, debugError } from './debug';
 
 /** How many segments to batch into one Gemini call. */
-const BATCH_SIZE = 3;
+const BATCH_SIZE = 5;
 
-/** Minimum delay (ms) between consecutive Gemini API calls. */
-const MIN_DELAY_MS = 2500;
+/** Minimum delay (ms) between consecutive Gemini API calls. (Optimized for paid tier) */
+const MIN_DELAY_MS = 500;
 
 /** Initial backoff (ms) on 429 rate-limit errors. */
 const INITIAL_BACKOFF_MS = 5000;
@@ -50,10 +50,20 @@ export class TranslationQueue {
 
   private onTranslation: TranslationCallback;
   private onError: ErrorCallback;
+  private onBatchComplete?: (durationMs: number, batchSize: number) => void;
 
-  constructor(onTranslation: TranslationCallback, onError: ErrorCallback) {
+  constructor(
+    onTranslation: TranslationCallback, 
+    onError: ErrorCallback,
+    onBatchComplete?: (durationMs: number, batchSize: number) => void
+  ) {
     this.onTranslation = onTranslation;
     this.onError = onError;
+    this.onBatchComplete = onBatchComplete;
+  }
+
+  public get queueLength(): number {
+    return this.queue.length;
   }
 
   /** Update API settings (called when recording starts). */
@@ -118,6 +128,7 @@ export class TranslationQueue {
 
         if (batch.length === 1) {
           // Single segment — direct translation.
+          const startMs = performance.now();
           const result = await translateText(
             batch[0].text,
             this.apiKey,
@@ -125,6 +136,7 @@ export class TranslationQueue {
             currentModelToUse,
             this.contextBuffer.length > 0 ? [...this.contextBuffer] : undefined
           );
+          const durationMs = performance.now() - startMs;
 
           this.lastCallTime = Date.now();
           this.backoffMs = INITIAL_BACKOFF_MS; // reset backoff on success
@@ -132,8 +144,9 @@ export class TranslationQueue {
 
           if (result) {
             this.contextBuffer.push(batch[0].text);
-            if (this.contextBuffer.length > 5) this.contextBuffer.shift();
+            if (this.contextBuffer.length > 10) this.contextBuffer.shift();
             this.onTranslation(batch[0].segmentId, result);
+            this.onBatchComplete?.(durationMs, 1);
           }
         } else {
           // Multiple segments — batch translation.
@@ -145,6 +158,7 @@ export class TranslationQueue {
             this.prompt +
             '\n\nTranslate each numbered segment below. Return ONLY the translations in the same numbered format [1], [2], etc.';
 
+          const startMs = performance.now();
           const result = await translateText(
             numberedInput,
             this.apiKey,
@@ -152,6 +166,7 @@ export class TranslationQueue {
             currentModelToUse,
             this.contextBuffer.length > 0 ? [...this.contextBuffer] : undefined
           );
+          const durationMs = performance.now() - startMs;
 
           this.lastCallTime = Date.now();
           this.backoffMs = INITIAL_BACKOFF_MS;
@@ -160,6 +175,7 @@ export class TranslationQueue {
           if (result) {
             // Parse numbered results.
             const translations = this.parseBatchResult(result, batch.length);
+            let successCount = 0;
             for (let i = 0; i < batch.length; i++) {
               const translated = translations[i] || null;
               if (!translated) {
@@ -170,8 +186,12 @@ export class TranslationQueue {
                 continue;
               }
               this.contextBuffer.push(batch[i].text);
-              if (this.contextBuffer.length > 5) this.contextBuffer.shift();
+              if (this.contextBuffer.length > 10) this.contextBuffer.shift();
               this.onTranslation(batch[i].segmentId, translated);
+              successCount++;
+            }
+            if (successCount > 0) {
+              this.onBatchComplete?.(durationMs, successCount);
             }
           }
         }

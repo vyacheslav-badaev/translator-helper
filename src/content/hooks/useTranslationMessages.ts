@@ -30,6 +30,14 @@ export interface UseTranslationMessagesReturn {
   isActive: boolean;
   isSpeaking: boolean;
   errorMessage: string;
+  sourceLang: string;
+  targetLang: string;
+  analytics: {
+    queueLength: number;
+    chunksProcessed: number;
+    avgTranscribeMs: number;
+    avgTranslateMs: number;
+  };
   handleToggle: (id: number) => void;
   handleToggleAll: () => void;
   handleClearHistory: () => void;
@@ -41,6 +49,14 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
   const [isActive, setIsActive] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [sourceLang, setSourceLang] = useState('EN');
+  const [targetLang, setTargetLang] = useState('RU');
+  const [analytics, setAnalytics] = useState({
+    queueLength: 0,
+    chunksProcessed: 0,
+    avgTranscribeMs: 0,
+    avgTranslateMs: 0
+  });
 
   const errorTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -86,21 +102,25 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
         debugLog('Panel', `New segment #${msg.segment.id}`);
         setSegments((prev) => {
           const next = [...prev, msg.segment];
-          if (next.length > MAX_SEGMENTS) {
-            const evicted = next.slice(0, next.length - MAX_SEGMENTS);
-            setToggleMap((prevMap) => {
-              const cleaned = { ...prevMap };
-              for (const seg of evicted) {
-                delete cleaned[seg.id];
-              }
-              cleaned[msg.segment.id] = false;
-              return cleaned;
-            });
-            return next.slice(-MAX_SEGMENTS);
-          }
-          return next;
+          return next.length > MAX_SEGMENTS ? next.slice(-MAX_SEGMENTS) : next;
         });
-        setToggleMap((prev) => ({ ...prev, [msg.segment.id]: false }));
+        
+        setToggleMap((prev) => {
+          const updated = { ...prev, [msg.segment.id]: false };
+          const keys = Object.keys(updated);
+          // Cleanup old toggle states to prevent memory leak
+          if (keys.length > MAX_SEGMENTS + 20) {
+            const trimmed: Record<number, boolean> = {};
+            // Object keys are strings, but they are numerical IDs, so they sort reasonably
+            // We just grab the last MAX_SEGMENTS keys.
+            const keptKeys = keys.slice(-MAX_SEGMENTS);
+            for (const key of keptKeys) {
+              trimmed[Number(key)] = updated[Number(key)];
+            }
+            return trimmed;
+          }
+          return updated;
+        });
       }
 
       if (msg.type === 'TRANSLATION_RESULT') {
@@ -122,10 +142,17 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
       if (msg.type === 'TRANSLATION_STATE') {
         debugLog('Panel', `Translation state: ${msg.isActive}`);
         setIsActive(msg.isActive);
+        if (msg.sourceLang) setSourceLang(msg.sourceLang.toUpperCase());
+        if (msg.targetLang) setTargetLang(msg.targetLang.toUpperCase());
         if (!msg.isActive) {
           setSegments([]);
           setToggleMap({});
+          setAnalytics({ queueLength: 0, chunksProcessed: 0, avgTranscribeMs: 0, avgTranslateMs: 0 });
         }
+      }
+
+      if (msg.type === 'ANALYTICS_UPDATE') {
+        setAnalytics(msg.metrics);
       }
 
       if (msg.type === 'VAD_SPEECH_START') setIsSpeaking(true);
@@ -155,6 +182,9 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
     isActive,
     isSpeaking,
     errorMessage,
+    sourceLang,
+    targetLang,
+    analytics,
     handleToggle,
     handleToggleAll,
     handleClearHistory

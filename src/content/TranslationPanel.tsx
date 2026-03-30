@@ -37,6 +37,7 @@ const PANEL_STYLES = `
     100% { height: 2px; }
   }
   .tp-eq { background: #10b981; width: 3px; border-radius: 1px; animation: tp-eq 0.5s infinite ease-in-out; }
+  .tp-eq-idle { background: rgba(16, 185, 129, 0.4); width: 3px; height: 3px; border-radius: 1px; transition: height 0.2s; }
   .tp-eq-1 { animation-delay: 0.1s; }
   .tp-eq-2 { animation-delay: 0.3s; }
   .tp-eq-3 { animation-delay: 0.2s; }
@@ -74,7 +75,6 @@ function clampBadgePosition(x: number, y: number) {
 export function TranslationPanel() {
   const messages = useTranslationMessages();
   const [isMinimized, setIsMinimized] = useState(false);
-  const [showEq, setShowEq] = useState(true);
 
   // Badge auto-hide: 'visible' → 'fading' (5s) → 'hidden' (5.6s) when OFF.
   const [badgePhase, setBadgePhase] = useState<'visible' | 'fading' | 'hidden'>(
@@ -136,7 +136,6 @@ export function TranslationPanel() {
 
       <StatusBadge
         isActive={messages.isActive}
-        isSpeaking={messages.isSpeaking}
         badgePhase={badgePhase}
         position={badge.pos}
         onPointerDown={badge.onPointerDown}
@@ -169,6 +168,9 @@ export function TranslationPanel() {
         >
           <PanelHeader
             isMinimized={isMinimized}
+            isSpeaking={messages.isSpeaking}
+            sourceLang={messages.sourceLang}
+            targetLang={messages.targetLang}
             onToggleAll={messages.handleToggleAll}
             onClearHistory={messages.handleClearHistory}
             onToggleMinimize={() => setIsMinimized(!isMinimized)}
@@ -211,9 +213,25 @@ export function TranslationPanel() {
             <PanelFooter
               segmentCount={messages.segments.length}
               isSpeaking={messages.isSpeaking}
-              showEq={showEq}
-              onToggleEq={() => setShowEq(!showEq)}
             />
+          )}
+
+          {!isMinimized && (
+            <div
+              style={{
+                padding: '4px 12px',
+                fontSize: '9px',
+                color: 'rgba(255,255,255,0.4)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                borderTop: '1px solid rgba(255,255,255,0.02)',
+                background: 'rgba(0,0,0,0.2)'
+              }}
+            >
+              <span title="Audio chunks transcription stats">🎙️ {messages.analytics.chunksProcessed} ({messages.analytics.avgTranscribeMs}ms)</span>
+              <span title="Queue of segments waiting for translation">⏳ {messages.analytics.queueLength} pending</span>
+              <span title="Average translation time per API request">✨ {messages.analytics.avgTranslateMs}ms</span>
+            </div>
           )}
         </div>
       )}

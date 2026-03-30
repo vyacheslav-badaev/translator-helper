@@ -10,6 +10,9 @@ import React from 'react';
 
 interface PanelHeaderProps {
   isMinimized: boolean;
+  isSpeaking: boolean;
+  sourceLang: string;
+  targetLang: string;
   onToggleAll: () => void;
   onClearHistory: () => void;
   onToggleMinimize: () => void;
@@ -20,6 +23,9 @@ interface PanelHeaderProps {
 
 export function PanelHeader({
   isMinimized,
+  isSpeaking,
+  sourceLang,
+  targetLang,
   onToggleAll,
   onClearHistory,
   onToggleMinimize,
@@ -44,9 +50,25 @@ export function PanelHeader({
         flexShrink: 0
       }}
     >
-      <span style={{ color: '#fff', fontSize: '13px', fontWeight: 600 }}>
-        Live Translation
-      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ width: '8px', height: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span
+            style={{
+              display: 'inline-block',
+              width: 8,
+              height: 8,
+              background: '#ff3333',
+              borderRadius: '50%',
+              opacity: isSpeaking ? 1 : 0,
+              transition: 'opacity 0.2s',
+              animation: isSpeaking ? 'tp-pulse 1.5s infinite ease-in-out' : 'none'
+            }}
+          />
+        </div>
+        <span style={{ color: '#fff', fontSize: '13px', fontWeight: 600 }}>
+          Live Translation
+        </span>
+      </div>
       <div style={{ display: 'flex', gap: '6px' }}>
         {/* Toggle all button */}
         <button
@@ -62,7 +84,7 @@ export function PanelHeader({
             cursor: 'pointer'
           }}
         >
-          EN/RU
+          {sourceLang}/{targetLang}
         </button>
         {/* Clear history button */}
         <button

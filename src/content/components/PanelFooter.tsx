@@ -8,20 +8,16 @@
 interface PanelFooterProps {
   segmentCount: number;
   isSpeaking: boolean;
-  showEq: boolean;
-  onToggleEq: () => void;
 }
 
 export function PanelFooter({
   segmentCount,
-  isSpeaking,
-  showEq,
-  onToggleEq
+  isSpeaking
 }: PanelFooterProps) {
   return (
     <div
       style={{
-        padding: '4px 12px',
+        padding: '6px 12px',
         fontSize: '10px',
         color: 'rgba(255,255,255,0.25)',
         display: 'flex',
@@ -32,35 +28,20 @@ export function PanelFooter({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <button
-          onClick={onToggleEq}
-          title="Toggle Equalizer"
+        <div
+          title={isSpeaking ? 'Listening...' : 'Silence'}
           style={{
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            color: showEq ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.2)',
-            fontSize: '10px',
-            padding: 0
+            display: 'flex',
+            gap: '2px',
+            height: '10px',
+            alignItems: 'flex-end',
+            marginLeft: '4px'
           }}
         >
-          {showEq ? 'Hide EQ' : 'Show EQ'}
-        </button>
-        {showEq && isSpeaking && (
-          <div
-            style={{
-              display: 'flex',
-              gap: '2px',
-              height: '10px',
-              alignItems: 'flex-end',
-              marginLeft: '4px'
-            }}
-          >
-            <div className="tp-eq tp-eq-1" />
-            <div className="tp-eq tp-eq-2" />
-            <div className="tp-eq tp-eq-3" />
-          </div>
-        )}
+          <div className={isSpeaking ? 'tp-eq tp-eq-1' : 'tp-eq-idle'} />
+          <div className={isSpeaking ? 'tp-eq tp-eq-2' : 'tp-eq-idle'} />
+          <div className={isSpeaking ? 'tp-eq tp-eq-3' : 'tp-eq-idle'} />
+        </div>
       </div>
       <div>
         {segmentCount} segment{segmentCount !== 1 ? 's' : ''}
