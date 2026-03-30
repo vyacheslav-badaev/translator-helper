@@ -1,37 +1,41 @@
 /**
- * TranslationQueue — rate-limited, batched translation queue.
+ * TranslationQueue — Manages a rate-limited and batched translation pipeline using Gemini API.
  *
- * Segments are enqueued with their IDs and original text.
- * The queue drains automatically, batching up to BATCH_SIZE segments
- * into a single Gemini API call. A minimum delay between calls
- * prevents hitting rate limits.
+ * This class ensures that performance is optimized for paid-tier API keys by:
+ * 1. Batching multiple transcription segments into a single API request (up to BATCH_SIZE).
+ * 2. Maintaining a minimum delay (MIN_DELAY_MS) between consecutive requests.
+ * 3. Implementing exponential backoff and model fallbacks for resilience.
  *
- * On success, the provided callback delivers translated text per segment ID.
- * On 429 (rate limit), the queue pauses and retries with exponential backoff.
+ * It uses a persistent context buffer to provide the LLM with previous dialogue context,
+ * which significantly improves translation consistency for long-running sessions.
  */
 
 import { translateText } from '../api/gemini';
 import { GEMINI_MODELS } from '../constants';
 import { debugLog, debugWarn, debugError } from './debug';
 
-/** How many segments to batch into one Gemini call. */
+/** Maximum number of segments allowed in a single batch. */
 const BATCH_SIZE = 5;
 
-/** Minimum delay (ms) between consecutive Gemini API calls. (Optimized for paid tier) */
+/** Minimum delay between Gemini API calls to respect rate limits (optimized for paid tier). */
 const MIN_DELAY_MS = 500;
 
-/** Initial backoff (ms) on 429 rate-limit errors. */
+/** Initial delay for exponential backoff on rate-limit errors (429). */
 const INITIAL_BACKOFF_MS = 5000;
 
-/** Maximum backoff (ms). */
+/** Maximum allowed backoff delay. */
 const MAX_BACKOFF_MS = 60000;
 
+/** Internal representation of a queued transcription fragment. */
 interface QueueItem {
   segmentId: number;
   text: string;
 }
 
+/** Callback signature for delivering translated text associated with a segment ID. */
 type TranslationCallback = (segmentId: number, translatedText: string) => void;
+
+/** Callback for reporting critical translation errors. */
 type ErrorCallback = (message: string) => void;
 
 export class TranslationQueue {
@@ -39,19 +43,24 @@ export class TranslationQueue {
   private isProcessing = false;
   private backoffMs = INITIAL_BACKOFF_MS;
   private lastCallTime = 0;
-  private sessionId = 0;
+  private sessionId = 0; // Incremented on clear() to invalidate stale process loops
 
   private apiKey = '';
   private prompt = '';
   private model = '';
-  private fallbackModels: string[] = [];
+  private fallbackModels: string[] = []; // List of compatible models to try on failure
   private currentFallbackIndex = 0;
-  private contextBuffer: string[] = [];
+  private contextBuffer: string[] = []; // Historical context for the LLM
 
   private onTranslation: TranslationCallback;
   private onError: ErrorCallback;
   private onBatchComplete?: (durationMs: number, batchSize: number) => void;
 
+  /**
+   * @param onTranslation Dispatched when a segment is successfully translated.
+   * @param onError Dispatched on critical API failure.
+   * @param onBatchComplete Dispatched for performance tracking (telemetry).
+   */
   constructor(
     onTranslation: TranslationCallback, 
     onError: ErrorCallback,
@@ -62,17 +71,22 @@ export class TranslationQueue {
     this.onBatchComplete = onBatchComplete;
   }
 
+  /** Current count of segments waiting for translation. */
   public get queueLength(): number {
     return this.queue.length;
   }
 
-  /** Update API settings (called when recording starts). */
+  /**
+   * Configures the queue with active API settings. 
+   * Prepares fallback models if using a Flash model.
+   */
   configure(apiKey: string, prompt: string, model: string): void {
     this.apiKey = apiKey;
     this.prompt = prompt;
     this.model = model;
     this.currentFallbackIndex = 0;
 
+    // Automatically detect and prepare fallback options for model redundancy.
     if (model.includes('flash')) {
       const allFlash = GEMINI_MODELS.filter((m) => m.id.includes('flash')).map(
         (m) => m.id
@@ -83,7 +97,9 @@ export class TranslationQueue {
     }
   }
 
-  /** Add a segment to the translation queue. */
+  /**
+   * Adds a new transcription segment to the queue and triggers the processing loop.
+   */
   enqueue(segmentId: number, text: string): void {
     this.queue.push({ segmentId, text });
     debugLog(
@@ -93,29 +109,34 @@ export class TranslationQueue {
     void this.processLoop();
   }
 
-  /** Clear the queue and abort any in-flight processing. */
+  /**
+   * Clears the queue, resets history, and increments the session ID to stop the current loop.
+   */
   clear(): void {
-    this.sessionId++; // invalidate any sleeping/in-flight loop
+    this.sessionId++;
     this.queue = [];
     this.contextBuffer = [];
     this.isProcessing = false;
     this.backoffMs = INITIAL_BACKOFF_MS;
   }
 
+  /**
+   * Core processing loop that handles batching and rate-limiting.
+   */
   private async processLoop(): Promise<void> {
     if (this.isProcessing) return;
     this.isProcessing = true;
     const loopSession = this.sessionId;
 
     while (this.queue.length > 0 && loopSession === this.sessionId) {
-      // Rate limit: ensure minimum delay between calls.
+      // 1. Minimum delay guard for rate-limiting.
       const elapsed = Date.now() - this.lastCallTime;
       if (elapsed < MIN_DELAY_MS) {
         await this.sleep(MIN_DELAY_MS - elapsed);
-        if (loopSession !== this.sessionId) break; // aborted during sleep
+        if (loopSession !== this.sessionId) break;
       }
 
-      // Take a batch from the queue.
+      // 2. Extract a batch of segments.
       const batch = this.queue.splice(0, BATCH_SIZE);
       debugLog(
         'TranslationQueue',
@@ -127,7 +148,7 @@ export class TranslationQueue {
           this.fallbackModels[this.currentFallbackIndex] || this.model;
 
         if (batch.length === 1) {
-          // Single segment — direct translation.
+          // Optimization: single segment processing for lower latency when traffic is low.
           const startMs = performance.now();
           const result = await translateText(
             batch[0].text,
@@ -138,18 +159,15 @@ export class TranslationQueue {
           );
           const durationMs = performance.now() - startMs;
 
-          this.lastCallTime = Date.now();
-          this.backoffMs = INITIAL_BACKOFF_MS; // reset backoff on success
-          this.currentFallbackIndex = 0; // reset fallback on success
+          this.handleSuccess();
 
           if (result) {
-            this.contextBuffer.push(batch[0].text);
-            if (this.contextBuffer.length > 10) this.contextBuffer.shift();
-            this.onTranslation(batch[0].segmentId, result);
+            this.updateContextAndNotify(batch[0].segmentId, batch[0].text, result);
             this.onBatchComplete?.(durationMs, 1);
           }
         } else {
-          // Multiple segments — batch translation.
+          // Batch processing: packs multiple segments into one prompt for reduced token usage 
+          // and better contextual awareness across related sentences.
           const numberedInput = batch
             .map((item, i) => `[${i + 1}] ${item.text}`)
             .join('\n');
@@ -168,26 +186,18 @@ export class TranslationQueue {
           );
           const durationMs = performance.now() - startMs;
 
-          this.lastCallTime = Date.now();
-          this.backoffMs = INITIAL_BACKOFF_MS;
-          this.currentFallbackIndex = 0;
+          this.handleSuccess();
 
           if (result) {
-            // Parse numbered results.
             const translations = this.parseBatchResult(result, batch.length);
             let successCount = 0;
             for (let i = 0; i < batch.length; i++) {
               const translated = translations[i] || null;
               if (!translated) {
-                debugWarn(
-                  'TranslationQueue',
-                  `Batch parse failed for segment #${batch[i].segmentId}, skipping`
-                );
+                debugWarn('TranslationQueue', `Batch parse failed for segment #${batch[i].segmentId}`);
                 continue;
               }
-              this.contextBuffer.push(batch[i].text);
-              if (this.contextBuffer.length > 10) this.contextBuffer.shift();
-              this.onTranslation(batch[i].segmentId, translated);
+              this.updateContextAndNotify(batch[i].segmentId, batch[i].text, translated);
               successCount++;
             }
             if (successCount > 0) {
@@ -197,68 +207,66 @@ export class TranslationQueue {
         }
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
-
-        debugWarn(
-          'TranslationQueue',
-          `Translation failed on model ${this.fallbackModels[this.currentFallbackIndex] || this.model}: ${errMsg}`
-        );
-
-        // Try falling back to another flash model before backing off or failing.
-        // We only fallback if we haven't exhausted our fallback options.
-        if (this.currentFallbackIndex < this.fallbackModels.length - 1) {
-          this.currentFallbackIndex++;
-          debugWarn(
-            'TranslationQueue',
-            `Falling back to next model: ${this.fallbackModels[this.currentFallbackIndex]}`
-          );
-          // Put items back at the front of the queue to retry immediately with next model
-          this.queue.unshift(...batch);
-          continue;
-        }
-
-        // Check for rate limit (429) or overloaded/unavailable (503/500).
-        if (
-          errMsg.includes('429') ||
-          errMsg.includes('503') ||
-          errMsg.includes('500') ||
-          errMsg.toLowerCase().includes('rate')
-        ) {
-          debugWarn(
-            'TranslationQueue',
-            `Rate limited or unavailable after model fallbacks, backing off ${this.backoffMs}ms`
-          );
-          // Put items back.
-          this.queue.unshift(...batch);
-          await this.sleep(this.backoffMs);
-          if (loopSession !== this.sessionId) break; // aborted during backoff
-          this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
-          // Reset fallback index to try the preferred models again after backoff
-          this.currentFallbackIndex = 0;
-        } else {
-          debugError(
-            'TranslationQueue',
-            `Translation critically failed: ${errMsg}`
-          );
-          this.onError(errMsg);
-        }
+        await this.handleError(batch, errMsg, loopSession);
       }
     }
 
     this.isProcessing = false;
   }
 
+  /** Internal helper to reset backoff state on successful API call. */
+  private handleSuccess() {
+    this.lastCallTime = Date.now();
+    this.backoffMs = INITIAL_BACKOFF_MS;
+    this.currentFallbackIndex = 0;
+  }
+
+  /** Internal helper to manage context buffer and notify subscribers. */
+  private updateContextAndNotify(id: number, original: string, translated: string) {
+    this.contextBuffer.push(original);
+    if (this.contextBuffer.length > 10) this.contextBuffer.shift();
+    this.onTranslation(id, translated);
+  }
+
   /**
-   * Parses a numbered batch result like:
-   *   [1] Привет
-   *   [2] Мир
+   * Handles API errors with model fallbacks and exponential backoff.
+   */
+  private async handleError(batch: QueueItem[], errMsg: string, loopSession: number) {
+    debugWarn('TranslationQueue', `Attempt failed: ${errMsg}`);
+
+    // Try redundant models if available.
+    if (this.currentFallbackIndex < this.fallbackModels.length - 1) {
+      this.currentFallbackIndex++;
+      this.queue.unshift(...batch); // Retry immediately with the next model
+      return;
+    }
+
+    // Handle rate-limiting (429) or transient server errors (5xx).
+      if (this.isRetryable(errMsg)) {
+      debugWarn('TranslationQueue', `Retrying in ${this.backoffMs}ms`);
+      this.queue.unshift(...batch);
+      await this.sleep(this.backoffMs);
+      if (loopSession !== this.sessionId) return; // session changed during sleep
+      this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
+      this.currentFallbackIndex = 0;
+    } else {
+      debugError('TranslationQueue', `Critical translation error: ${errMsg}`);
+      this.onError(errMsg);
+    }
+  }
+
+  private isRetryable(msg: string): boolean {
+    const codes = ['429', '503', '500', 'rate'];
+    return codes.some(code => msg.includes(code.toLowerCase()));
+  }
+
+  /**
+   * Parses the batched response from the LLM based on the numbered format.
    */
   private parseBatchResult(result: string, expectedCount: number): string[] {
     const translations: string[] = [];
     for (let i = 1; i <= expectedCount; i++) {
-      const pattern = new RegExp(
-        `\\[${i}\\]\\s*(.+?)(?=\\[${i + 1}\\]|$)`,
-        's'
-      );
+      const pattern = new RegExp(`\\[${i}\\]\\s*(.+?)(?=\\[${i + 1}\\]|$)`, 's');
       const match = result.match(pattern);
       translations.push(match ? match[1].trim() : '');
     }

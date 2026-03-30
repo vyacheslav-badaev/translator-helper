@@ -24,28 +24,28 @@ Chrome extension that captures active tab audio, transcribes speech in real time
 
 ### Content Overlay
 
-- Draggable and **resizable translation panel** in Shadow DOM — isolated from page styles
-- Each segment shows translated text; tap to toggle original transcript
-- **Visual Voice Indicators** — toggleable audio equalizer and status pulse confirming VAD is actively listening
-- **Copy-to-clipboard** per segment, **clear history** button
-- Smooth **fade-in** animation for new segments, CSS loading spinner while translating
-- Custom thin scrollbar inside the panel
+- Draggable and **resizable translation panel** in Shadow DOM — isolated from page styles.
+- Each segment shows translated text; tap to toggle original transcript.
+- **Visual Voice Indicators** — Heartbeat pulse in the header (red dot) and audio equalizer in the footer which animates in sync with speech.
+- **Analytics Footer** — Real-time telemetry showing transcription segments processed, queue length, and average latency (transcription & translation).
+- **Copy-to-clipboard** per segment, **clear history** button.
+- Smooth **fade-in** animation for new segments, CSS loading spinner while translating.
+- Custom thin scrollbar inside the panel.
 
 ### Status Badge
 
-- Floating draggable **Translator ON / OFF** badge
-- Includes a red pulsating dot when active voice is detected
-- **Auto-hides** 5 seconds after translation stops (fade-out animation) — no visual clutter while browsing
-- Reappears instantly when translation starts
+- Floating draggable **Translator ON / OFF** badge.
+- Includes a red pulsating dot when active voice is detected.
+- **Auto-hides** 5 seconds after translation stops (fade-out animation) — no visual clutter while browsing.
+- Reappears instantly when translation starts.
 
-### Reliability
+### Reliability & Performance
 
-- **High Availability Fallbacks** — dynamically switches to alternative Gemini Flash models on 503, 429, or 500 errors
-- **Rate-limit retry** with exponential backoff for Groq APIs
-- **Idle auto-shutdown** — translation stops automatically after 5 minutes of silence
-- **Critical error auto-stop** — pipeline shuts down on unrecoverable API errors
-- **Session-safe TranslationQueue** — `sessionId` prevents stale processing loops after stop/start cycles
-- Race-condition guard on toggle (`toggleInProgress`)
+- **High Availability Fallbacks** — dynamically switches to alternative Gemini Flash models on 503, 429, or 500 errors.
+- **Rate-limit retry** with exponential backoff for Groq Whisper.
+- **Optimized Batching** — enqueues segments and processes them in a single prompt to minimize API calls and latency.
+- **Idle auto-shutdown** — translation stops automatically after 5 minutes of silence.
+- **Context Preservation** — Maintains a sliding window of recent transcripts to ensure translation accuracy.
 
 ## Tech Stack
 

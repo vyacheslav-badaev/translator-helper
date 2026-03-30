@@ -1,13 +1,17 @@
 /**
- * TranslationPanel — Content script UI component.
+ * TranslationPanel — The primary entry point for the Content Script UI.
  *
- * Renders a floating, draggable chat-like panel that displays transcript segments.
- * Each segment shows original English text and can be toggled to show the Russian translation.
- * Segments appear immediately with original text; translations fill in asynchronously.
+ * This component is injected into the target webpage's DOM. It renders:
+ * 1. Background Logic: Syncs with the `useTranslationMessages` hook to receive live data.
+ * 2. Visual Layer:
+ *    - Draggable Floating Panel (Chat-style window).
+ *    - Draggable Heartbeat Badge (Persistent indicator).
+ *    - Resizable Container: Users can adjust window width/height.
+ *    - Real-time Analytics Footer: Telemetry for API performance.
  *
- * Also renders:
- * - Status badge (Translator ON/OFF) — draggable, bottom-left.
- * - Error toast — above the badge on pipeline errors.
+ * Layout Strategy:
+ * Uses a Fixed position system with standard clamping to prevent the panel from leaving the viewport.
+ * Uses Shadow DOM (via the Entry point) to prevent CSS leakage from/to the host page.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -19,7 +23,7 @@ import { PanelHeader } from './components/PanelHeader';
 import { PanelFooter } from './components/PanelFooter';
 import { SegmentRow } from './components/SegmentRow';
 
-/** Inline styles injected into Shadow DOM for scrollbar and animations. */
+/** Injected global styles for the Shadow DOM context. */
 const PANEL_STYLES = `
   .tp-scroll::-webkit-scrollbar { width: 5px; }
   .tp-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -44,13 +48,14 @@ const PANEL_STYLES = `
   .tp-resizable { resize: both; overflow: hidden; min-width: 250px; min-height: 200px; }
 `;
 
-/** Panel dimensions. */
+/** Initial Panel dimensions. */
 const PANEL_WIDTH = 380;
 const PANEL_HEIGHT = 600;
 
-/** Approximate height of the status badge. */
+/** Minimal spacing for the status badge. */
 const BADGE_HEIGHT = 34;
 
+/** Helper to keep the panel within visible boundaries. */
 function clampPosition(x: number, y: number, w: number, h: number) {
   return {
     x: Math.min(Math.max(8, x), Math.max(8, window.innerWidth - w - 8)),
@@ -58,6 +63,7 @@ function clampPosition(x: number, y: number, w: number, h: number) {
   };
 }
 
+/** Helper to keep the badge within visible boundaries. */
 function clampBadgePosition(x: number, y: number) {
   return {
     x: Math.min(Math.max(8, x), Math.max(8, window.innerWidth - 160)),
@@ -68,15 +74,12 @@ function clampBadgePosition(x: number, y: number) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// TranslationPanel — main component
-// ---------------------------------------------------------------------------
-
 export function TranslationPanel() {
   const messages = useTranslationMessages();
   const [isMinimized, setIsMinimized] = useState(false);
 
-  // Badge auto-hide: 'visible' → 'fading' (5s) → 'hidden' (5.6s) when OFF.
+  // Badge auto-hide logic: 
+  // When 'inactive' (translator OFF), the badge fades out after 5s to avoid UI clutter.
   const [badgePhase, setBadgePhase] = useState<'visible' | 'fading' | 'hidden'>(
     'visible'
   );
@@ -94,7 +97,7 @@ export function TranslationPanel() {
     };
   }, [messages.isActive]);
 
-  // Draggable panel.
+  // Main Panel Dragging setup.
   const panelRef = useRef<HTMLDivElement>(null);
   const panelClamp = useCallback((x: number, y: number) => {
     const w = panelRef.current?.offsetWidth ?? PANEL_WIDTH;
@@ -112,13 +115,13 @@ export function TranslationPanel() {
     panelClamp
   );
 
-  // Draggable badge.
+  // Floating Status Badge Dragging setup.
   const badge = useDraggable(
     () => clampBadgePosition(16, window.innerHeight - BADGE_HEIGHT - 16),
     clampBadgePosition
   );
 
-  // Auto-scroll to bottom when new segments arrive.
+  // Auto-scroll mechanics: Ensure the latest translated message is always visible.
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -134,8 +137,10 @@ export function TranslationPanel() {
     <>
       <style>{PANEL_STYLES}</style>
 
+      {/* Floating dot/heartbeat shown when the panel is minimized or closed */}
       <StatusBadge
         isActive={messages.isActive}
+        isSpeaking={messages.isSpeaking}
         badgePhase={badgePhase}
         position={badge.pos}
         onPointerDown={badge.onPointerDown}
@@ -143,6 +148,7 @@ export function TranslationPanel() {
         onPointerUp={badge.onPointerUp}
       />
 
+      {/* Popup alerts for API failures (rate limits, context window, etc.) */}
       <ErrorToast message={messages.errorMessage} position={badge.pos} />
 
       {messages.isActive && (
@@ -166,6 +172,7 @@ export function TranslationPanel() {
             fontFamily: 'system-ui, sans-serif'
           }}
         >
+          {/* Draggable Title Bar */}
           <PanelHeader
             isMinimized={isMinimized}
             isSpeaking={messages.isSpeaking}
@@ -216,6 +223,7 @@ export function TranslationPanel() {
             />
           )}
 
+          {/* Service Analytics: Telemetry data for technical monitoring */}
           {!isMinimized && (
             <div
               style={{

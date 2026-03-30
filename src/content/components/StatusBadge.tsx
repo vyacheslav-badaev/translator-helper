@@ -1,15 +1,20 @@
 /**
  * StatusBadge — Floating draggable pill showing "Translator ON/OFF".
  *
- * Positioned at the bottom-left by default. Auto-hides (fade-out animation)
- * 5 seconds after translation stops. Shows a red pulsating dot when the
- * VAD detects active speech.
+ * It serves as a persistent status indicator that stays visible even when the main
+ * panel is closed or minimized. 
+ *
+ * Key behaviors:
+ * 1. Heartbeat Sync: Shows a red pulsating dot when active speech is detected via VAD.
+ * 2. Auto-hide: Gradually fades out after 5 seconds of inactivity to minimize distraction.
+ * 3. Draggable: Can be repositioned anywhere along the viewport edges.
  */
 
 import React from 'react';
 
 interface StatusBadgeProps {
   isActive: boolean;
+  isSpeaking: boolean; // Managed by VAD status from background
   badgePhase: 'visible' | 'fading' | 'hidden';
   position: { x: number; y: number };
   onPointerDown: (e: React.PointerEvent) => void;
@@ -19,6 +24,7 @@ interface StatusBadgeProps {
 
 export function StatusBadge({
   isActive,
+  isSpeaking,
   badgePhase,
   position,
   onPointerDown,
@@ -41,7 +47,7 @@ export function StatusBadge({
           ? 'rgba(22,163,74,0.92)'
           : 'rgba(107,114,128,0.92)',
         color: '#fff',
-        padding: '8px 12px',
+        padding: '8px 14px',
         borderRadius: '999px',
         fontSize: '12px',
         fontFamily: 'system-ui, sans-serif',
@@ -51,9 +57,27 @@ export function StatusBadge({
         backdropFilter: 'blur(6px)',
         boxShadow: '0 4px 14px rgba(0,0,0,0.25)',
         cursor: 'move',
-        userSelect: 'none'
+        userSelect: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px'
       }}
     >
+      {isActive && (
+        <span
+          style={{
+            display: 'inline-block',
+            width: 10,
+            height: 10,
+            background: '#ff0000',
+            borderRadius: '50%',
+            opacity: isSpeaking ? 1 : 0.3,
+            transition: 'opacity 0.2s',
+            animation: isSpeaking ? 'tp-pulse 1.3s infinite ease-in-out' : 'none',
+            boxShadow: isSpeaking ? '0 0 8px rgba(255,0,0,0.6)' : 'none'
+          }}
+        />
+      )}
       {isActive ? 'Translator ON' : 'Translator OFF'}
     </div>
   );

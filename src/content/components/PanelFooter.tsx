@@ -1,13 +1,14 @@
 /**
- * PanelFooter — Bottom bar of the translation panel.
+ * PanelFooter — Bottom status and analytics bar for the translation panel.
  *
- * Shows the current segment count and a toggleable audio equalizer
- * visualization that animates when the VAD detects active speech.
+ * It provides real-time feedback about the processing pipeline:
+ * 1. Equalizer: Three green bars that animate vertically when speech is detected (VAD).
+ * 2. Segment Counter: Displays the current number of fragments in session.
  */
 
 interface PanelFooterProps {
-  segmentCount: number;
-  isSpeaking: boolean;
+  segmentCount: number; // Total number of fragments currently in memory
+  isSpeaking: boolean;  // VAD status; triggers CSS animations for the EQ
 }
 
 export function PanelFooter({
@@ -28,6 +29,7 @@ export function PanelFooter({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        {/* Real-time CSS Equalizer: Static bars when silent, jumping bars when speaking */}
         <div
           title={isSpeaking ? 'Listening...' : 'Silence'}
           style={{

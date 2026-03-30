@@ -1,28 +1,33 @@
-import { debugLog } from '../utils/debug';
 import { IDLE_TIMEOUT_MS } from '../constants';
+import { debugLog } from '../utils/debug';
 
-let idleTimerId: ReturnType<typeof setTimeout> | null = null;
+/** 
+ * Module to handle automatic pipeline shutdown after a period of inactivity. 
+ */
 
-/** Resets (or starts) the idle timer. Called on each new segment and on start. */
-export function resetIdleTimer(
-  isTranslating: () => boolean,
-  onIdle: () => void
-) {
+let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Resets the inactivity timer. 
+ * If no activity occurs within IDLE_TIMEOUT_MS, the onTimeout callback is fired.
+ */
+export function resetIdleTimer(isActiveCheck: () => boolean, onTimeout: () => void) {
   clearIdleTimer();
-  idleTimerId = setTimeout(() => {
-    if (!isTranslating()) return;
-    debugLog(
-      'Background',
-      `No activity for ${IDLE_TIMEOUT_MS / 1000}s — auto-stopping translation`
-    );
-    onIdle();
+  
+  if (!isActiveCheck()) return;
+
+  idleTimeout = setTimeout(() => {
+    debugLog('Background', 'Idle timeout reached, auto-stopping...');
+    onTimeout();
   }, IDLE_TIMEOUT_MS);
 }
 
-/** Clears the idle timer if running. */
+/**
+ * Cancels the current idle timer.
+ */
 export function clearIdleTimer() {
-  if (idleTimerId !== null) {
-    clearTimeout(idleTimerId);
-    idleTimerId = null;
+  if (idleTimeout) {
+    clearTimeout(idleTimeout);
+    idleTimeout = null;
   }
 }

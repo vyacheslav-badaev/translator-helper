@@ -1,39 +1,49 @@
-import { debugLog, debugError } from '../utils/debug';
+/**
+ * Manages the lifecycle of the Offscreen Document.
+ * Offscreen documents are required in Manifest V3 for tasks that need DOM APIs, 
+ * like getUserMedia or complex audio processing.
+ */
 
-/** Creates the offscreen document if it doesn't already exist. */
+import { debugLog } from '../utils/debug';
+
+/**
+ * Ensures the offscreen document is created and ready.
+ * If it already exists, this is a no-op.
+ */
 export async function setupOffscreenDocument() {
+  const OFFSCREEN_PATH = 'offscreen.html';
+
   const existingContexts = await chrome.runtime.getContexts({
-    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT]
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
+    documentUrls: [chrome.runtime.getURL(OFFSCREEN_PATH)]
   });
 
   if (existingContexts.length > 0) {
-    debugLog('Background', 'Offscreen document already exists, reusing');
+    debugLog('Background', 'Offscreen document already exists');
     return;
   }
 
-  debugLog('Background', 'Creating offscreen document…');
+  debugLog('Background', 'Creating offscreen document');
   await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: [
-      chrome.offscreen.Reason.USER_MEDIA,
-      chrome.offscreen.Reason.AUDIO_PLAYBACK
-    ],
-    justification: 'Recording audio for real-time translation'
+    url: OFFSCREEN_PATH,
+    reasons: [chrome.offscreen.Reason.USER_MEDIA, chrome.offscreen.Reason.AUDIO_PLAYBACK],
+    justification: 'Capturing tab audio for real-time transcription and providing audio passthrough.'
   });
-  debugLog('Background', 'Offscreen document created');
 }
 
-/** Safely closes the offscreen document if it is open. */
+/**
+ * Closes the offscreen document if it exists.
+ */
 export async function closeOffscreenDocument() {
-  try {
-    const existingContexts = await chrome.runtime.getContexts({
-      contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT]
-    });
-    if (existingContexts.length > 0) {
-      await chrome.offscreen.closeDocument();
-      debugLog('Background', 'Offscreen document closed');
-    }
-  } catch (error) {
-    debugError('Background', 'Failed to close offscreen document:', error);
+  const OFFSCREEN_PATH = 'offscreen.html';
+
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
+    documentUrls: [chrome.runtime.getURL(OFFSCREEN_PATH)]
+  });
+
+  if (existingContexts.length > 0) {
+    debugLog('Background', 'Closing offscreen document');
+    await chrome.offscreen.closeDocument();
   }
 }

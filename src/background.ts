@@ -1,5 +1,6 @@
 /**
  * Background Service Worker.
+ * Acts as the central orchestrator for the extension's translation pipeline.
  */
 
 import type {
@@ -26,22 +27,25 @@ import { resetIdleTimer, clearIdleTimer } from './background/idleTimer';
 /** Whether the translation pipeline is currently active. */
 let isTranslating = false;
 
-/** Guard flag to prevent concurrent toggle operations. */
+/** Guard flag to prevent concurrent toggle operations and race conditions. */
 let toggleInProgress = false;
 
-/** Monotonic segment ID counter. */
+/** Monotonic segment ID counter for the current session. */
 let nextSegmentId = 1;
 
-/** Holds segments for the current active recording session. */
+/** Holds segments for the current active recording session in memory. */
 let currentSessionSegments: TranscriptSegment[] = [];
+
+/** Current language configuration. */
 let currentSourceLang = 'auto';
 let currentTargetLang = 'ru';
 
-/** Analytics state */
+/** Analytics state for tracking performance. */
 let chunksProcessed = 0;
 let avgTranscribeMs = 0;
 let avgTranslateMs = 0;
 
+/** Broadcasts the current analytics metrics to all active content script tabs. */
 function broadcastAnalytics() {
   void broadcastToActiveTabs({
     type: 'ANALYTICS_UPDATE',
@@ -54,9 +58,9 @@ function broadcastAnalytics() {
   });
 }
 
-/** Translation queue with rate limiting and batching. */
+/** Translation queue with rate limiting, batching, and fallback logic. */
 const translationQueue = new TranslationQueue(
-  // onTranslation callback
+  // onTranslation callback: triggered when a segment translation is ready
   (segmentId: number, translatedText: string) => {
     debugLog('Background', `Translation ready for segment #${segmentId}`);
     const seg = currentSessionSegments.find((s) => s.id === segmentId);
@@ -70,7 +74,7 @@ const translationQueue = new TranslationQueue(
       translatedText
     });
   },
-  // onError callback
+  // onError callback: handles translation failures and triggers auto-stop if needed
   (message: string) => {
     debugError('Background', `Translation queue error: ${message}`);
     void broadcastToActiveTabs({
@@ -86,9 +90,10 @@ const translationQueue = new TranslationQueue(
       }
     });
   },
-  // onBatchComplete callback (for analytics)
+  // onBatchComplete callback: updates translation latency analytics
   (durationMs: number, batchSize: number) => {
     const singleTranslateTime = durationMs / batchSize;
+    // Exponential moving average for smoother metrics
     avgTranslateMs =
       avgTranslateMs === 0
         ? singleTranslateTime
@@ -97,7 +102,7 @@ const translationQueue = new TranslationQueue(
   }
 );
 
-// Hotkey listener
+/** Global hotkey listener for starting/stopping the translation. */
 chrome.commands.onCommand.addListener((command: string) => {
   if (command === 'toggle-translation') {
     debugLog('Background', 'Hotkey triggered: toggle-translation');
@@ -107,6 +112,7 @@ chrome.commands.onCommand.addListener((command: string) => {
 
 /**
  * Starts or stops the translation pipeline.
+ * Handles offscreen document lifecycle, media stream capture, and settings injection.
  */
 async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
   if (toggleInProgress) {
@@ -123,6 +129,7 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
 
   try {
     if (shouldStart) {
+      // 1. Prepare offscreen document for audio capture
       await setupOffscreenDocument();
 
       const [tab] = await chrome.tabs.query({
@@ -134,11 +141,13 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
       }
       debugLog('Background', `Capturing tab: id=${tab.id}, url=${tab.url}`);
 
+      // 2. Obtain streamId to pass to offscreen document
       const streamId = await chrome.tabCapture.getMediaStreamId({
         targetTabId: tab.id
       });
       debugLog('Background', `Got streamId: ${streamId.substring(0, 20)}…`);
 
+      // 3. Load user settings and configure prompts
       const settings = await loadSettings();
       if (!settings.groqApiKey || !settings.geminiApiKey) {
         throw new Error(
@@ -161,12 +170,14 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
       currentSourceLang = sourceId;
       currentTargetLang = targetId;
 
+      // 4. Initialize translation queue with latest settings
       translationQueue.configure(
         settings.geminiApiKey,
         finalPrompt,
         settings.geminiModel || DEFAULT_GEMINI_MODEL
       );
 
+      // 5. Handle session resumption if segments were provided from history
       if (resumeSegments && resumeSegments.length > 0) {
         currentSessionSegments = [...resumeSegments];
         nextSegmentId = Math.max(...resumeSegments.map((s) => s.id)) + 1;
@@ -181,6 +192,7 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
           }
         }
       } else {
+        // Reset analytics and segments for a fresh session
         currentSessionSegments = [];
         nextSegmentId = 1;
         chunksProcessed = 0;
@@ -188,8 +200,10 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
         avgTranslateMs = 0;
       }
 
+      // 6. Start idle timer for auto-shutdown after silence
       resetIdleTimer(() => isTranslating, () => void handleToggleTranslation());
 
+      // 7. Signal offscreen document to start audio capture
       const message: OffscreenRequestMessage = {
         target: 'offscreen',
         type: 'START_RECORDING',
@@ -200,17 +214,21 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
       isTranslating = true;
       debugLog('Background', 'Translation started successfully');
     } else {
+      // 1. Signal offscreen to stop
       const message: OffscreenRequestMessage = {
         target: 'offscreen',
         type: 'STOP_RECORDING'
       };
       await chrome.runtime.sendMessage(message).catch(() => undefined);
+      
+      // 2. Cleanup resources
       await closeOffscreenDocument();
       translationQueue.clear();
       clearIdleTimer();
       isTranslating = false;
       debugLog('Background', 'Translation stopped successfully');
 
+      // 3. Save the current session to history (IndexedDB)
       if (currentSessionSegments.length > 0) {
         const titleText =
           currentSessionSegments[0].originalText.trim() || 'Empty Session';
@@ -236,6 +254,7 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
       isTranslating = false;
       await closeOffscreenDocument();
     }
+    // Inform UI about the failure
     await broadcastToActiveTabs({
       type: 'PIPELINE_ERROR',
       message:
@@ -243,11 +262,14 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
     });
   } finally {
     toggleInProgress = false;
+    // Notify all tabs about the final state sync
     await syncTranslationState(isTranslating, currentSourceLang, currentTargetLang);
   }
 }
 
-// Incoming message handler
+/** 
+ * Main message listener for incoming requests from Popup or Offscreen.
+ */
 chrome.runtime.onMessage.addListener(
   (
     message: unknown,
@@ -262,11 +284,13 @@ chrome.runtime.onMessage.addListener(
 
     debugLog('Background', `Received message: ${request.type}`);
 
+    // Synchronous response for status check
     if (request.type === 'GET_STATUS') {
       sendResponse({ isTranslating, busy: toggleInProgress });
       return;
     }
 
+    // Async handling for pipeline messages
     void (async () => {
       if (request.type === 'PIPELINE_ERROR') {
         debugError(
@@ -288,7 +312,8 @@ chrome.runtime.onMessage.addListener(
         return;
       }
 
-        if (request.type === 'TRANSCRIPTION_SEGMENT') {
+      if (request.type === 'TRANSCRIPTION_SEGMENT') {
+        // Create new session segment from transcription
         const segment: TranscriptSegment = {
           id: nextSegmentId++,
           originalText: request.text,
@@ -302,6 +327,7 @@ chrome.runtime.onMessage.addListener(
           `New segment #${segment.id}: "${request.text.substring(0, 50)}…"`
         );
 
+        // Update transcription latency metrics
         chunksProcessed++;
         if (request.durationMs) {
           avgTranscribeMs =
@@ -310,10 +336,13 @@ chrome.runtime.onMessage.addListener(
               : avgTranscribeMs * 0.9 + request.durationMs * 0.1;
         }
 
+        // Reset idle timer activity
         resetIdleTimer(() => isTranslating, () => void handleToggleTranslation());
 
+        // Broadcast new segment to UI
         await broadcastToActiveTabs({ type: 'NEW_SEGMENT', segment });
 
+        // Push to translation queue
         translationQueue.enqueue(segment.id, segment.originalText);
         broadcastAnalytics();
 
@@ -321,6 +350,7 @@ chrome.runtime.onMessage.addListener(
         return;
       }
 
+      // Voice Activity Detection (VAD) events broadcast
       if (
         request.type === 'VAD_SPEECH_START' ||
         request.type === 'VAD_SPEECH_END'
@@ -336,6 +366,7 @@ chrome.runtime.onMessage.addListener(
         return;
       }
 
+      // Popup-initiated control actions
       if (request.type === 'START_FROM_POPUP') {
         if (isTranslating) {
           sendResponse({ status: 'noop', isTranslating });
@@ -362,6 +393,6 @@ chrome.runtime.onMessage.addListener(
       }
     })();
 
-    return true;
+    return true; // Keep message channel open for async response
   }
 );

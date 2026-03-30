@@ -1,7 +1,10 @@
 import { debugLog, debugWarn } from '../utils/debug';
 import type { ContentScriptMessage } from '../types/messages';
 
-/** Updates the action badge and broadcasts current state to all active tabs. */
+/** 
+ * Synchronizes the translation state by updating the action badge 
+ * and broadcasting the status to all active content script tabs.
+ */
 export async function syncTranslationState(
   isTranslating: boolean,
   sourceLang?: string,
@@ -9,10 +12,13 @@ export async function syncTranslationState(
 ) {
   debugLog('Background', `Syncing state: isTranslating=${isTranslating}`);
 
+  // Update extension icon badge
   await chrome.action.setBadgeText({ text: isTranslating ? 'ON' : '' });
   if (isTranslating) {
     await chrome.action.setBadgeBackgroundColor({ color: '#16a34a' });
   }
+
+  // Notify content scripts to show/hide the UI panel
   await broadcastToActiveTabs({
     type: 'TRANSLATION_STATE',
     isActive: isTranslating,
@@ -21,7 +27,9 @@ export async function syncTranslationState(
   });
 }
 
-/** Sends a message to the content script in every active tab. */
+/** 
+ * Broadcasts a generic ContentScriptMessage to all active and visible tabs.
+ */
 export async function broadcastToActiveTabs(message: ContentScriptMessage) {
   const tabs = await chrome.tabs.query({ active: true, windowType: 'normal' });
   debugLog(

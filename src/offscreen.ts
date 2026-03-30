@@ -1,9 +1,12 @@
 /**
- * Offscreen Document — Audio Capture & Transcription.
+ * Offscreen Document — Handles Audio Capture, Voice Activity Detection (VAD), and Transcription.
+ * 
+ * In Manifest V3, we use an offscreen document because service workers cannot access 
+ * the DOM-based getUserMedia API or run the ONNX-based VAD worklets.
  *
  * Pipeline per chunk:
- *   MicVAD (Voice Activity Detection) → Groq Whisper (transcription) → SentenceBuffer
- *   → TRANSCRIPTION_SEGMENT messages to background service worker.
+ *   MicVAD (VAD) → Encode to WAV → Groq Whisper (ASR) → SentenceBuffer (splitting)
+ *   → Send TRANSCRIPTION_SEGMENT messages to background service worker.
  */
 
 import { transcribeAudioChunk } from './api/groq';
@@ -18,9 +21,10 @@ import { debugLog, debugWarn, debugError } from './utils/debug';
 import { MicVAD, utils } from '@ricky0123/vad-web';
 
 // ---------------------------------------------------------------------------
-// Types
+// Types and Constraints
 // ---------------------------------------------------------------------------
 
+/** Custom constraints for chrome.tabCapture stream detection. */
 type ChromeTabCaptureAudioConstraints = MediaTrackConstraints & {
   mandatory: {
     chromeMediaSource: 'tab';
@@ -29,7 +33,7 @@ type ChromeTabCaptureAudioConstraints = MediaTrackConstraints & {
 };
 
 // ---------------------------------------------------------------------------
-// Module-level state
+// Module-level State
 // ---------------------------------------------------------------------------
 
 let activeStream: MediaStream | null = null;
@@ -38,14 +42,14 @@ let myvad: MicVAD | null = null;
 let isRecording = false;
 
 let cachedSettings: StoredSettings | null = null;
-let recordingSessionId = 0;
-let processingQueue = Promise.resolve();
+let recordingSessionId = 0; // Guard to prevent late callbacks from impacting new sessions
+let processingQueue = Promise.resolve(); // Ensures sequential processing of audio chunks
 
 const sentenceBuffer = new SentenceBuffer();
-const whisperPromptBuffer: string[] = [];
+const whisperPromptBuffer: string[] = []; // Context buffer for Whisper to maintain coherence
 
 // ---------------------------------------------------------------------------
-// Message listener
+// Message listener: Handles control signals from Background.
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener(
@@ -75,7 +79,7 @@ chrome.runtime.onMessage.addListener(
                 : 'Failed to start recording'
           });
         });
-      return true;
+      return true; // Keep channel open for async response
     }
 
     if (request.type === 'STOP_RECORDING') {
@@ -88,9 +92,12 @@ chrome.runtime.onMessage.addListener(
 );
 
 // ---------------------------------------------------------------------------
-// Recording lifecycle
+// Recording Lifecycle: Management of Tab Capture, Passthrough, and VAD.
 // ---------------------------------------------------------------------------
 
+/**
+ * Initializes the audio capture stream and sets up the VAD pipeline.
+ */
 async function startRecording(streamId: string) {
   if (isRecording) {
     debugWarn(
@@ -104,6 +111,7 @@ async function startRecording(streamId: string) {
   debugLog('Offscreen', `Starting recording session #${sessionId}`);
 
   try {
+    // 1. Capture the tab's audio stream via streamId from background
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         mandatory: {
@@ -116,14 +124,14 @@ async function startRecording(streamId: string) {
     activeStream = stream;
     isRecording = true;
 
-    // Route captured audio back to speakers so the user still hears it.
+    // 2. Route captured audio back to speakers (Passthrough) so the user can hear the original audio.
     audioPassthrough = new AudioContext();
     const source = audioPassthrough.createMediaStreamSource(stream);
     source.connect(audioPassthrough.destination);
     debugLog('Offscreen', 'Audio passthrough connected to speakers');
 
-    // Override getStream/pauseStream so VAD uses our tabCapture stream
-    // instead of calling getUserMedia (which would fail in offscreen context).
+    // 3. Configure the Voice Activity Detection (VAD) options.
+    // Optimized for dialogue: 300ms silence detection and high sensitivity.
     const vadOptions = {
       getStream: async () => activeStream!,
       pauseStream: async () => {
@@ -133,13 +141,11 @@ async function startRecording(streamId: string) {
       baseAssetPath: chrome.runtime.getURL(''),
       onnxWASMBasePath: chrome.runtime.getURL(''),
       workletURL: chrome.runtime.getURL('vad.worklet.bundle.min.js'),
-      // VAD v0.0.30 uses ms-based parameters (frame-based ones are ignored).
-      // Aggressive optimization for very fast dialogue segments.
       positiveSpeechThreshold: 0.8,
       negativeSpeechThreshold: 0.45,
       minSpeechMs: 150,
       preSpeechPadMs: 100,
-      redemptionMs: 200,
+      redemptionMs: 300, // Wait for 300ms of silence before concluding a segment
       submitUserSpeechOnPause: true,
       onVADMisfire: () => {
         debugLog('VAD', 'VAD misfire detected');
@@ -160,11 +166,12 @@ async function startRecording(streamId: string) {
           .sendMessage({ target: 'background', type: 'VAD_SPEECH_END' })
           .catch(() => undefined);
 
-        // Convert Float32Array to WAV blob for Whisper
+        // Convert the raw VAD audio buffer (Float32Array) to a WAV blob for the Groq API.
         try {
           const wavBuffer = utils.encodeWAV(audio);
           const blob = new Blob([wavBuffer], { type: 'audio/wav' });
 
+          // Queue the chunk for sequential transcription processing.
           processingQueue = processingQueue
             .then(() => processAudioChunk(blob, sessionId))
             .catch((error) => {
@@ -179,8 +186,9 @@ async function startRecording(streamId: string) {
         }
       }
     };
+    
+    // 4. Create and start the VAD instance.
     myvad = await MicVAD.new(vadOptions);
-
     myvad.start();
     debugLog('Offscreen', 'Recording started (ML VAD mode)');
   } catch (error) {
@@ -194,6 +202,9 @@ async function startRecording(streamId: string) {
   }
 }
 
+/**
+ * Stops the recording sessions and cleans up all active resources.
+ */
 async function stopRecording() {
   debugLog('Offscreen', 'Stopping recording…');
 
@@ -205,6 +216,7 @@ async function stopRecording() {
     myvad = null;
   }
 
+  // Final flush of any partially recorded sentences.
   const remaining = sentenceBuffer.drain();
   for (const sentence of remaining) {
     await sendSegment(sentence);
@@ -214,7 +226,7 @@ async function stopRecording() {
   sentenceBuffer.reset();
   whisperPromptBuffer.length = 0;
 
-  // Send an end message just in case we stopped while speaking
+  // Clear VAD status in the UI if we stopped while speaking.
   chrome.runtime
     .sendMessage({ target: 'background', type: 'VAD_SPEECH_END' })
     .catch(() => undefined);
@@ -222,6 +234,9 @@ async function stopRecording() {
   debugLog('Offscreen', 'Recording stopped');
 }
 
+/**
+ * Releases system resources: AudioContext and MediaStream tracks.
+ */
 async function cleanupMediaResources() {
   if (audioPassthrough) {
     await audioPassthrough.close().catch(() => undefined);
@@ -233,14 +248,20 @@ async function cleanupMediaResources() {
   activeStream = null;
 }
 
+/**
+ * Helper to check if a specific callback still belongs to the active session.
+ */
 function isCurrentSession(sessionId: number) {
   return isRecording && sessionId === recordingSessionId;
 }
 
 // ---------------------------------------------------------------------------
-// Audio chunk processing pipeline
+// Audio Chunk Processing: Transcription & Segmentation.
 // ---------------------------------------------------------------------------
 
+/**
+ * Sends an audio blob to Groq Whisper for transcription and dispatches sentences.
+ */
 async function processAudioChunk(blob: Blob, sessionId: number) {
   if (!isCurrentSession(sessionId)) {
     return;
@@ -262,6 +283,8 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
       cachedSettings.sourceLanguage && cachedSettings.sourceLanguage !== 'auto'
         ? cachedSettings.sourceLanguage
         : undefined;
+    
+    // Provide recent transcription history to Whisper as a prompt for dynamic adaptation.
     const whisperPrompt =
       whisperPromptBuffer.length > 0
         ? whisperPromptBuffer.slice(-3).join(' ')
@@ -281,16 +304,20 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
       return;
     }
 
+    // Update the Whisper context buffer.
     whisperPromptBuffer.push(transcription);
     if (whisperPromptBuffer.length > 5) {
       whisperPromptBuffer.shift();
     }
 
+    // Segment the raw transcription into individual sentences.
     const sentences = sentenceBuffer.flush(transcription);
 
     for (const sentence of sentences) {
       if (!isCurrentSession(sessionId)) break;
       debugLog('Offscreen', `Sending segment: "${sentence.substring(0, 60)}…" (${Math.round(durationMs)}ms)`);
+      
+      // Notify background about the new transcription segment.
       const msg: BackgroundRequestMessage = {
         target: 'background',
         type: 'TRANSCRIPTION_SEGMENT',
@@ -306,9 +333,14 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
         ? error.message
         : 'Unknown error in transcription pipeline'
     );
+  } finally {
+    // Optional: add specific cleanup here if needed.
   }
 }
 
+/**
+ * Sends a raw text segment directly to the background service worker.
+ */
 async function sendSegment(text: string): Promise<void> {
   debugLog('Offscreen', `Sending segment: "${text.substring(0, 60)}…"`);
   const msg: BackgroundRequestMessage = {
@@ -319,6 +351,9 @@ async function sendSegment(text: string): Promise<void> {
   await chrome.runtime.sendMessage(msg).catch(() => undefined);
 }
 
+/**
+ * Reports pipeline errors back to the background for UI manifestation.
+ */
 async function notifyPipelineError(message: string) {
   debugError('Offscreen', `Pipeline error: ${message}`);
   const backgroundMessage: BackgroundRequestMessage = {

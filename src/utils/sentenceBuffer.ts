@@ -1,23 +1,26 @@
 /**
- * SentenceBuffer — accumulates raw Whisper transcription fragments
- * and emits complete sentences.
+ * SentenceBuffer — Accumulates raw audio transcription fragments and reconstructs full sentences.
+ *
+ * Problem: Whisper results often cut mid-sentence or provide short fragments.
+ * Solution: This class buffers fragments and uses a regex-based strategy to detect 
+ * stable sentence boundaries before emitting them for translation.
  *
  * Splitting strategy:
- *   1. Append each Whisper result to an internal buffer.
- *   2. Split on sentence-ending punctuation (. ! ?) followed by a space or end-of-string.
- *   3. If a fragment has no sentence-ending punctuation but exceeds
- *      MAX_FRAGMENT_WORDS, emit it as-is (safety cap for long unpunctuated speech).
- *   4. Leftover text stays in the buffer for the next append.
+ *   1. Append each Whisper fragment to an internal string buffer.
+ *   2. Split on punctuation (. ! ?) followed by a space and an uppercase letter (English/Russian).
+ *   3. Protect common abbreviations (Mr., Dr., etc.) from causing false splits.
+ *   4. Safety Flush: If a fragment reaches MAX_FRAGMENT_WORDS without punctuation, 
+ *      emit it as-is to ensure real-time responsiveness.
  */
 
 import { debugLog } from './debug';
 
-/** Minimum number of words before we emit a sentence even without punctuation. */
+/** Prevents infinite buffering in case of long speech without punctuation. */
 const MAX_FRAGMENT_WORDS = 25;
 
 /** 
- * Regex that splits on sentence-ending punctuation followed by whitespace or EOL,
- * but ignores common abbreviations like Mr., Dr., e.g., etc. using negative lookbehinds. 
+ * Regex optimized for English and Russian sentence boundaries.
+ * Uses negative lookbehind to avoid splitting on common abbreviations.
  */
 const SENTENCE_BOUNDARY = /(?<=[.!?])(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Rev|St|Sgt|Capt|Gen|Sen|Rep|Gov|Fig|Eq|vs|e\.g|i\.e)\.)\s+(?=[A-ZА-ЯЁ])/;
 
@@ -25,8 +28,8 @@ export class SentenceBuffer {
   private buffer = '';
 
   /**
-   * Appends raw transcription text and returns any complete sentences
-   * that can be extracted from the buffer.
+   * Appends new transcription text and returns an array of stable sentences.
+   * Internal buffer keeps the trailing incomplete fragment.
    */
   flush(text: string): string[] {
     this.buffer += (this.buffer ? ' ' : '') + text.trim();
@@ -34,7 +37,7 @@ export class SentenceBuffer {
     const sentences: string[] = [];
     const parts = this.buffer.split(SENTENCE_BOUNDARY);
 
-    // All parts except the last are complete sentences.
+    // All parts except the last one are considered completed sentences.
     for (let i = 0; i < parts.length - 1; i++) {
       const sentence = parts[i].trim();
       if (sentence) {
@@ -42,10 +45,10 @@ export class SentenceBuffer {
       }
     }
 
-    // The last part may be incomplete — keep it in the buffer.
+    // The last part is buffered for further accumulation.
     const remainder = parts[parts.length - 1].trim();
 
-    // Safety: if the remainder is very long (no punctuation), emit it anyway.
+    // Force flush if the dialogue is too long without punctuation.
     const wordCount = remainder.split(/\s+/).length;
     if (wordCount >= MAX_FRAGMENT_WORDS) {
       debugLog('SentenceBuffer', `Forcing flush of long fragment (${wordCount} words)`);
@@ -56,15 +59,14 @@ export class SentenceBuffer {
     }
 
     if (sentences.length > 0) {
-      debugLog('SentenceBuffer', `Emitted ${sentences.length} sentence(s), buffer="${this.buffer.substring(0, 40)}…"`);
+      debugLog('SentenceBuffer', `Emitted ${sentences.length} sentence(s), remaining buffer: "${this.buffer.substring(0, 40)}…"`);
     }
 
     return sentences;
   }
 
   /**
-   * Forces any remaining buffered text out as a sentence.
-   * Call this when recording stops to avoid losing trailing text.
+   * Returns all remaining text in the buffer. Use this when the audio stream ends.
    */
   drain(): string[] {
     const text = this.buffer.trim();
@@ -72,7 +74,7 @@ export class SentenceBuffer {
     return text ? [text] : [];
   }
 
-  /** Clears the buffer without emitting. */
+  /** Resets state entirely. */
   reset(): void {
     this.buffer = '';
   }

@@ -1,14 +1,13 @@
 /**
- * useTranslationMessages — Runtime message handler for the content script.
+ * useTranslationMessages — React hook for maintaining the real-time translation state.
  *
- * Subscribes to `chrome.runtime.onMessage` and processes:
- * - `NEW_SEGMENT`        — appends a transcript segment (caps at MAX_SEGMENTS).
- * - `TRANSLATION_RESULT` — patches the matching segment with translated text.
- * - `TRANSLATION_STATE`  — toggles the active flag; clears segments on stop.
- * - `VAD_SPEECH_START/END` — tracks whether the user is currently speaking.
- * - `PIPELINE_ERROR`     — displays a transient error toast.
+ * It acts as the primary bridge between the background service worker and the UI:
+ * 1. Subscribes to runtime messages (transcriptions, translations, analytics).
+ * 2. Manages segment history with a memory cap (MAX_SEGMENTS).
+ * 3. Tracks VAD (speech) status and dynamic language selection.
+ * 4. Handles automated cleanup when the translation pipeline stops.
  *
- * Also queries `GET_STATUS` on mount to sync initial state.
+ * @returns {UseTranslationMessagesReturn} State and handlers for the TranslationPanel.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -20,16 +19,16 @@ import type {
 } from '../../types/messages';
 import type { TranscriptSegment } from '../../types/segment';
 
-/** Maximum number of transcript segments kept in memory before eviction. */
+/** Limit for the number of segments stored in the UI to prevent DOM performance degradation. */
 const MAX_SEGMENTS = 100;
 
-/** Public API returned by the hook. */
+/** State object returned by the hook. */
 export interface UseTranslationMessagesReturn {
   segments: TranscriptSegment[];
-  toggleMap: Record<number, boolean>;
-  isActive: boolean;
-  isSpeaking: boolean;
-  errorMessage: string;
+  toggleMap: Record<number, boolean>; // Maps segment ID to whether translated or original text is shown
+  isActive: boolean; // Whether the background pipeline is currently running
+  isSpeaking: boolean; // Real-time VAD status from the offscreen document
+  errorMessage: string; // Transient error for the toast notification
   sourceLang: string;
   targetLang: string;
   analytics: {
@@ -60,19 +59,25 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
 
   const errorTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** Clear all segments and reset the toggle map. */
+  /**
+   * Resets the UI state for the current session.
+   */
   const handleClearHistory = useCallback(() => {
     debugLog('Panel', 'Clearing segment history');
     setSegments([]);
     setToggleMap({});
   }, []);
 
-  /** Toggle a single segment between original and translated text. */
+  /**
+   * Swaps a specific segment's display mode.
+   */
   const handleToggle = useCallback((id: number) => {
     setToggleMap((prev) => ({ ...prev, [id]: !prev[id] }));
   }, []);
 
-  /** Toggle ALL segments to original or translated at once. */
+  /**
+   * Mass-toggles all visible segments to original or translated text.
+   */
   const handleToggleAll = useCallback(() => {
     setToggleMap((prev) => {
       const anyShowing = Object.values(prev).some(Boolean);
@@ -86,6 +91,7 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
   }, []);
 
   useEffect(() => {
+    // 1. Initial State Sync: Query the background for current translation status on mount.
     const getStatusMessage: BackgroundRequestMessage = {
       target: 'background',
       type: 'GET_STATUS'
@@ -97,8 +103,10 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
       }
     );
 
+    // 2. Message Listener: Reactive updates from the transcription pipeline.
     const listener = (msg: ContentScriptMessage) => {
       if (msg.type === 'NEW_SEGMENT') {
+        // Appending a new sentence fragment as it leaves the SentenceBuffer.
         debugLog('Panel', `New segment #${msg.segment.id}`);
         setSegments((prev) => {
           const next = [...prev, msg.segment];
@@ -108,11 +116,9 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
         setToggleMap((prev) => {
           const updated = { ...prev, [msg.segment.id]: false };
           const keys = Object.keys(updated);
-          // Cleanup old toggle states to prevent memory leak
+          // Automatic cleanup of the toggle map to maintain memory parity.
           if (keys.length > MAX_SEGMENTS + 20) {
             const trimmed: Record<number, boolean> = {};
-            // Object keys are strings, but they are numerical IDs, so they sort reasonably
-            // We just grab the last MAX_SEGMENTS keys.
             const keptKeys = keys.slice(-MAX_SEGMENTS);
             for (const key of keptKeys) {
               trimmed[Number(key)] = updated[Number(key)];
@@ -124,6 +130,7 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
       }
 
       if (msg.type === 'TRANSLATION_RESULT') {
+        // Patching an existing segment with its translated text from Gemini.
         debugLog('Panel', `Translation arrived for segment #${msg.segmentId}`);
         setSegments((prev) =>
           prev.map((s) =>
@@ -136,14 +143,18 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
               : s
           )
         );
+        // Automatically switch to translated view when result arrives.
         setToggleMap((prev) => ({ ...prev, [msg.segmentId]: true }));
       }
 
       if (msg.type === 'TRANSLATION_STATE') {
+        // Global toggle: Start/Stop.
         debugLog('Panel', `Translation state: ${msg.isActive}`);
         setIsActive(msg.isActive);
         if (msg.sourceLang) setSourceLang(msg.sourceLang.toUpperCase());
         if (msg.targetLang) setTargetLang(msg.targetLang.toUpperCase());
+        
+        // Reset local state if processing is stopped.
         if (!msg.isActive) {
           setSegments([]);
           setToggleMap({});
@@ -152,6 +163,7 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
       }
 
       if (msg.type === 'ANALYTICS_UPDATE') {
+        // Real-time telemetry update for the footer analytics bar.
         setAnalytics(msg.metrics);
       }
 
@@ -159,6 +171,7 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
       if (msg.type === 'VAD_SPEECH_END') setIsSpeaking(false);
 
       if (msg.type === 'PIPELINE_ERROR') {
+        // Display errors (transcription/translation API failures) as transient toasts.
         debugWarn('Panel', `Pipeline error: ${msg.message}`);
         setErrorMessage(msg.message);
         if (errorTimeout.current) clearTimeout(errorTimeout.current);
