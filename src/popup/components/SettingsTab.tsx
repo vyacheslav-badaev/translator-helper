@@ -24,15 +24,17 @@ interface SettingsTabProps {
   whisperModel: string;
   translationModel: string;
   prompt: string;
+  speakerDetection: boolean;
   onToggleTranslation: () => void;
-  onShowKeysChange: (v: boolean) => void;
-  onGroqKeyChange: (v: string) => void;
-  onGeminiKeyChange: (v: string) => void;
-  onSourceLanguageChange: (v: string) => void;
-  onTargetLanguageChange: (v: string) => void;
-  onWhisperModelChange: (v: string) => void;
-  onTranslationModelChange: (v: string) => void;
-  onPromptChange: (v: string) => void;
+  onShowKeysChange: (isVisible: boolean) => void;
+  onGroqKeyChange: (value: string) => void;
+  onGeminiKeyChange: (value: string) => void;
+  onSourceLanguageChange: (value: string) => void;
+  onTargetLanguageChange: (value: string) => void;
+  onWhisperModelChange: (value: string) => void;
+  onTranslationModelChange: (value: string) => void;
+  onPromptChange: (value: string) => void;
+  onSpeakerDetectionChange: (value: boolean) => void;
 }
 
 export function SettingsTab({
@@ -46,6 +48,7 @@ export function SettingsTab({
   whisperModel,
   translationModel,
   prompt,
+  speakerDetection,
   onToggleTranslation,
   onShowKeysChange,
   onGroqKeyChange,
@@ -54,7 +57,8 @@ export function SettingsTab({
   onTargetLanguageChange,
   onWhisperModelChange,
   onTranslationModelChange,
-  onPromptChange
+  onPromptChange,
+  onSpeakerDetectionChange
 }: SettingsTabProps) {
   return (
     <>
@@ -212,6 +216,24 @@ export function SettingsTab({
             </select>
           </div>
         </div>
+
+        {/* Speaker detection toggle */}
+        <label className="flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2 cursor-pointer">
+          <span>
+            <span className="text-xs font-medium text-gray-700 block">
+              Speaker detection
+            </span>
+            <span className="text-[10px] text-gray-400 block">
+              Tags segments per speaker. Applies on next session start.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-green-500 cursor-pointer"
+            checked={speakerDetection}
+            onChange={(e) => onSpeakerDetectionChange(e.target.checked)}
+          />
+        </label>
 
         {/* System prompt */}
         <div>

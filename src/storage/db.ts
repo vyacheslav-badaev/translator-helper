@@ -9,6 +9,7 @@ export interface SessionData {
   sourceLanguage?: string;
   targetLanguage?: string;
   segments: TranscriptSegment[];
+  speakerNames?: Record<number, string>;
 }
 
 interface TranslationDB extends DBSchema {

@@ -14,7 +14,8 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_WHISPER_MODEL,
   DEFAULT_SOURCE_LANGUAGE,
-  DEFAULT_TARGET_LANGUAGE
+  DEFAULT_TARGET_LANGUAGE,
+  DEFAULT_SPEAKER_DETECTION
 } from '../../constants';
 import { loadSettings, saveSettings } from '../../storage/settings';
 import type { StoredSettings } from '../../types/settings';
@@ -28,19 +29,21 @@ export interface SettingsState {
   translationModel: string;
   sourceLanguage: string;
   targetLanguage: string;
+  speakerDetection: boolean;
   showKeys: boolean;
 }
 
 /** Setters and imperative actions exposed by the hook. */
 export interface SettingsActions {
-  setGroqKey: (v: string) => void;
-  setGeminiKey: (v: string) => void;
-  setPrompt: (v: string) => void;
-  setWhisperModel: (v: string) => void;
-  setTranslationModel: (v: string) => void;
-  setSourceLanguage: (v: string) => void;
-  setTargetLanguage: (v: string) => void;
-  setShowKeys: (v: boolean) => void;
+  setGroqKey: (value: string) => void;
+  setGeminiKey: (value: string) => void;
+  setPrompt: (value: string) => void;
+  setWhisperModel: (value: string) => void;
+  setTranslationModel: (value: string) => void;
+  setSourceLanguage: (value: string) => void;
+  setTargetLanguage: (value: string) => void;
+  setSpeakerDetection: (value: boolean) => void;
+  setShowKeys: (isVisible: boolean) => void;
   flushSettings: () => Promise<void>;
 }
 
@@ -60,6 +63,9 @@ export function useSettings(): UseSettingsReturn {
   );
   const [sourceLanguage, setSourceLanguage] = useState(DEFAULT_SOURCE_LANGUAGE);
   const [targetLanguage, setTargetLanguage] = useState(DEFAULT_TARGET_LANGUAGE);
+  const [speakerDetection, setSpeakerDetection] = useState(
+    DEFAULT_SPEAKER_DETECTION
+  );
   const [showKeys, setShowKeys] = useState(false);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -78,6 +84,7 @@ export function useSettings(): UseSettingsReturn {
       translationModel,
       sourceLanguage,
       targetLanguage,
+      speakerDetection,
       ...overrides
     }),
     [
@@ -87,7 +94,8 @@ export function useSettings(): UseSettingsReturn {
       whisperModel,
       translationModel,
       sourceLanguage,
-      targetLanguage
+      targetLanguage,
+      speakerDetection
     ]
   );
 
@@ -134,6 +142,8 @@ export function useSettings(): UseSettingsReturn {
         setTranslationModel(settings.translationModel);
       if (settings.sourceLanguage) setSourceLanguage(settings.sourceLanguage);
       if (settings.targetLanguage) setTargetLanguage(settings.targetLanguage);
+      if (typeof settings.speakerDetection === 'boolean')
+        setSpeakerDetection(settings.speakerDetection);
       loaded.current = true;
     })();
   }, []);
@@ -146,6 +156,7 @@ export function useSettings(): UseSettingsReturn {
     translationModel,
     sourceLanguage,
     targetLanguage,
+    speakerDetection,
     showKeys,
     keysPresent,
     setGroqKey,
@@ -155,6 +166,7 @@ export function useSettings(): UseSettingsReturn {
     setTranslationModel,
     setSourceLanguage,
     setTargetLanguage,
+    setSpeakerDetection,
     setShowKeys,
     flushSettings
   };

@@ -14,4 +14,6 @@ export interface TranscriptSegment {
   isTranslating: boolean;
   /** Unix timestamp (ms) when the segment was created. */
   timestamp: number;
+  /** 1-based speaker tag assigned by diarization; undefined when disabled. */
+  speakerId?: number;
 }

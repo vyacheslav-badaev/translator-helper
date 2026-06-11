@@ -17,9 +17,9 @@ interface StatusBadgeProps {
   isSpeaking: boolean; // Managed by VAD status from background
   badgePhase: 'visible' | 'fading' | 'hidden';
   position: { x: number; y: number };
-  onPointerDown: (e: React.PointerEvent) => void;
-  onPointerMove: (e: React.PointerEvent) => void;
-  onPointerUp: (e: React.PointerEvent) => void;
+  onPointerDown: (event: React.PointerEvent) => void;
+  onPointerMove: (event: React.PointerEvent) => void;
+  onPointerUp: (event: React.PointerEvent) => void;
 }
 
 export function StatusBadge({

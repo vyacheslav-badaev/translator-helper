@@ -14,7 +14,8 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_WHISPER_MODEL,
   DEFAULT_SOURCE_LANGUAGE,
-  DEFAULT_TARGET_LANGUAGE
+  DEFAULT_TARGET_LANGUAGE,
+  DEFAULT_SPEAKER_DETECTION
 } from '../constants';
 import type { StoredSettings } from '../types/settings';
 import { debugLog, debugWarn } from '../utils/debug';
@@ -28,7 +29,8 @@ const ALL_FIELDS: Array<keyof StoredSettings> = [
   'geminiModel',
   'translationModel',
   'sourceLanguage',
-  'targetLanguage'
+  'targetLanguage',
+  'speakerDetection'
 ];
 
 /**
@@ -48,7 +50,8 @@ export async function loadSettings(): Promise<StoredSettings> {
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       whisperModel: DEFAULT_WHISPER_MODEL,
       geminiModel: DEFAULT_GEMINI_MODEL,
-      translationModel: DEFAULT_TRANSLATION_MODEL
+      translationModel: DEFAULT_TRANSLATION_MODEL,
+      speakerDetection: DEFAULT_SPEAKER_DETECTION
     };
   }
 
@@ -107,6 +110,11 @@ export async function loadSettings(): Promise<StoredSettings> {
       ? values.targetLanguage
       : DEFAULT_TARGET_LANGUAGE;
 
+  const speakerDetection =
+    typeof values.speakerDetection === 'boolean'
+      ? values.speakerDetection
+      : DEFAULT_SPEAKER_DETECTION;
+
   return {
     groqApiKey,
     geminiApiKey,
@@ -115,7 +123,8 @@ export async function loadSettings(): Promise<StoredSettings> {
     geminiModel,
     translationModel,
     sourceLanguage,
-    targetLanguage
+    targetLanguage,
+    speakerDetection
   };
 }
 
@@ -137,7 +146,8 @@ export async function saveSettings(settings: StoredSettings) {
     whisperModel: settings.whisperModel || DEFAULT_WHISPER_MODEL,
     translationModel: settings.translationModel || DEFAULT_TRANSLATION_MODEL,
     sourceLanguage: settings.sourceLanguage || DEFAULT_SOURCE_LANGUAGE,
-    targetLanguage: settings.targetLanguage || DEFAULT_TARGET_LANGUAGE
+    targetLanguage: settings.targetLanguage || DEFAULT_TARGET_LANGUAGE,
+    speakerDetection: settings.speakerDetection ?? DEFAULT_SPEAKER_DETECTION
   });
 
   debugLog('Settings', 'Settings saved successfully');

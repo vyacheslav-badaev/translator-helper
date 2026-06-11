@@ -198,3 +198,34 @@ export const WHISPER_MODELS = [
 
 /** Duration (ms) of no new segments before translation auto-stops. Default: 5 minutes. */
 export const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Speaker diarization (local WeSpeaker ResNet34-LM embeddings)
+// ---------------------------------------------------------------------------
+
+/** Bundled int8 ONNX speaker-embedding model filename (in extension root). */
+export const SPEAKER_MODEL_FILENAME = 'wespeaker_resnet34_lm_q8.onnx';
+
+/** Maximum number of distinct speakers tracked within a session. */
+export const MAX_SPEAKERS = 6;
+
+/**
+ * Cosine similarity threshold for assigning a chunk to an existing speaker.
+ * Below this value a new speaker centroid is created (until MAX_SPEAKERS).
+ */
+export const SPEAKER_SIMILARITY_THRESHOLD = 0.4;
+
+/**
+ * Minimum audio duration (ms) required for a reliable speaker embedding.
+ * Shorter chunks inherit the previously assigned speaker.
+ */
+export const MIN_EMBEDDING_AUDIO_MS = 1000;
+
+/** Default label prefix for unnamed speakers (e.g. "Speaker 1"). */
+export const DEFAULT_SPEAKER_LABEL_PREFIX = 'Speaker';
+
+/** Whether speaker detection is enabled by default for new installations. */
+export const DEFAULT_SPEAKER_DETECTION = true;
+
+/** Maximum length of a user-provided speaker name. */
+export const MAX_SPEAKER_NAME_LENGTH = 24;

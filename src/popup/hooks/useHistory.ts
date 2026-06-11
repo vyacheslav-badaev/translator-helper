@@ -17,10 +17,10 @@ import type { StoredSettings } from '../../types/settings';
 interface UseHistoryParams {
   activeTab: 'settings' | 'history';
   isActive: boolean;
-  setIsActive: (v: boolean) => void;
-  setActiveTab: (v: 'settings' | 'history') => void;
-  setSourceLanguage: (v: string) => void;
-  setTargetLanguage: (v: string) => void;
+  setIsActive: (isActive: boolean) => void;
+  setActiveTab: (tab: 'settings' | 'history') => void;
+  setSourceLanguage: (value: string) => void;
+  setTargetLanguage: (value: string) => void;
   flushSettings: (overrides?: Partial<StoredSettings>) => Promise<void>;
   sourceLanguage: string;
   targetLanguage: string;
@@ -66,20 +66,25 @@ export function useHistory({
     debugLog('History', `Exporting session ${session.id}`);
     let content = `Session: ${session.title}\nDate: ${new Date(session.timestamp).toLocaleString()}\n\n`;
     session.segments.forEach((seg) => {
+      const speakerStr =
+        seg.speakerId !== undefined
+          ? `[${session.speakerNames?.[seg.speakerId] || `Speaker ${seg.speakerId}`}] `
+          : '';
+
       content += `[${new Date(seg.timestamp).toLocaleTimeString()}]\n`;
-      content += `Audio: ${seg.originalText}\n`;
+      content += `${speakerStr}Audio: ${seg.originalText}\n`;
       if (seg.translatedText) {
-        content += `Translation: ${seg.translatedText}\n`;
+        content += `${speakerStr}Translation: ${seg.translatedText}\n`;
       }
       content += `\n`;
     });
 
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `translator_${session.id}.txt`;
-    a.click();
+    const downloadLink = document.createElement('a');
+    downloadLink.href = url;
+    downloadLink.download = `translator_${session.id}.txt`;
+    downloadLink.click();
     URL.revokeObjectURL(url);
   }, []);
 
@@ -124,7 +129,8 @@ export function useHistory({
       const message: BackgroundRequestMessage = {
         target: 'background',
         type: 'START_FROM_POPUP',
-        resumeSegments: session.segments
+        resumeSegments: session.segments,
+        resumeSpeakerNames: session.speakerNames
       };
       chrome.runtime.sendMessage(
         message,

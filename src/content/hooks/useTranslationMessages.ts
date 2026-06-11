@@ -26,6 +26,7 @@ const MAX_SEGMENTS = 100;
 export interface UseTranslationMessagesReturn {
   segments: TranscriptSegment[];
   toggleMap: Record<number, boolean>; // Maps segment ID to whether translated or original text is shown
+  speakerNames: Record<number, string>; // User-assigned names per speaker ID (session-scoped)
   isActive: boolean; // Whether the background pipeline is currently running
   isSpeaking: boolean; // Real-time VAD status from the offscreen document
   errorMessage: string; // Transient error for the toast notification
@@ -40,11 +41,13 @@ export interface UseTranslationMessagesReturn {
   handleToggle: (id: number) => void;
   handleToggleAll: () => void;
   handleClearHistory: () => void;
+  handleRenameSpeaker: (speakerId: number, name: string) => void;
 }
 
 export function useTranslationMessages(): UseTranslationMessagesReturn {
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [toggleMap, setToggleMap] = useState<Record<number, boolean>>({});
+  const [speakerNames, setSpeakerNames] = useState<Record<number, string>>({});
   const [isActive, setIsActive] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -73,6 +76,20 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
    */
   const handleToggle = useCallback((id: number) => {
     setToggleMap((prev) => ({ ...prev, [id]: !prev[id] }));
+  }, []);
+
+  /**
+   * Sends a speaker rename request to the background, which broadcasts
+   * the updated name map back to all tabs.
+   */
+  const handleRenameSpeaker = useCallback((speakerId: number, name: string) => {
+    const msg: BackgroundRequestMessage = {
+      target: 'background',
+      type: 'RENAME_SPEAKER',
+      speakerId,
+      name
+    };
+    chrome.runtime.sendMessage(msg).catch(() => undefined);
   }, []);
 
   /**
@@ -112,7 +129,7 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
           const next = [...prev, msg.segment];
           return next.length > MAX_SEGMENTS ? next.slice(-MAX_SEGMENTS) : next;
         });
-        
+
         setToggleMap((prev) => {
           const updated = { ...prev, [msg.segment.id]: false };
           const keys = Object.keys(updated);
@@ -153,13 +170,23 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
         setIsActive(msg.isActive);
         if (msg.sourceLang) setSourceLang(msg.sourceLang.toUpperCase());
         if (msg.targetLang) setTargetLang(msg.targetLang.toUpperCase());
-        
+
         // Reset local state if processing is stopped.
         if (!msg.isActive) {
           setSegments([]);
           setToggleMap({});
-          setAnalytics({ queueLength: 0, chunksProcessed: 0, avgTranscribeMs: 0, avgTranslateMs: 0 });
+          setSpeakerNames({});
+          setAnalytics({
+            queueLength: 0,
+            chunksProcessed: 0,
+            avgTranscribeMs: 0,
+            avgTranslateMs: 0
+          });
         }
+      }
+
+      if (msg.type === 'SPEAKER_NAMES') {
+        setSpeakerNames(msg.names);
       }
 
       if (msg.type === 'ANALYTICS_UPDATE') {
@@ -192,6 +219,7 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
   return {
     segments,
     toggleMap,
+    speakerNames,
     isActive,
     isSpeaking,
     errorMessage,
@@ -200,6 +228,7 @@ export function useTranslationMessages(): UseTranslationMessagesReturn {
     analytics,
     handleToggle,
     handleToggleAll,
-    handleClearHistory
+    handleClearHistory,
+    handleRenameSpeaker
   };
 }

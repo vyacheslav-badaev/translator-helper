@@ -56,19 +56,19 @@ const PANEL_HEIGHT = 600;
 const BADGE_HEIGHT = 34;
 
 /** Helper to keep the panel within visible boundaries. */
-function clampPosition(x: number, y: number, w: number, h: number) {
+function clampPosition(posX: number, posY: number, containerWidth: number, containerHeight: number) {
   return {
-    x: Math.min(Math.max(8, x), Math.max(8, window.innerWidth - w - 8)),
-    y: Math.min(Math.max(8, y), Math.max(8, window.innerHeight - h - 8))
+    x: Math.min(Math.max(8, posX), Math.max(8, window.innerWidth - containerWidth - 8)),
+    y: Math.min(Math.max(8, posY), Math.max(8, window.innerHeight - containerHeight - 8))
   };
 }
 
 /** Helper to keep the badge within visible boundaries. */
-function clampBadgePosition(x: number, y: number) {
+function clampBadgePosition(posX: number, posY: number) {
   return {
-    x: Math.min(Math.max(8, x), Math.max(8, window.innerWidth - 160)),
+    x: Math.min(Math.max(8, posX), Math.max(8, window.innerWidth - 160)),
     y: Math.min(
-      Math.max(8, y),
+      Math.max(8, posY),
       Math.max(8, window.innerHeight - BADGE_HEIGHT - 8)
     )
   };
@@ -78,7 +78,7 @@ export function TranslationPanel() {
   const messages = useTranslationMessages();
   const [isMinimized, setIsMinimized] = useState(false);
 
-  // Badge auto-hide logic: 
+  // Badge auto-hide logic:
   // When 'inactive' (translator OFF), the badge fades out after 5s to avoid UI clutter.
   const [badgePhase, setBadgePhase] = useState<'visible' | 'fading' | 'hidden'>(
     'visible'
@@ -99,10 +99,10 @@ export function TranslationPanel() {
 
   // Main Panel Dragging setup.
   const panelRef = useRef<HTMLDivElement>(null);
-  const panelClamp = useCallback((x: number, y: number) => {
-    const w = panelRef.current?.offsetWidth ?? PANEL_WIDTH;
-    const h = panelRef.current?.offsetHeight ?? PANEL_HEIGHT;
-    return clampPosition(x, y, w, h);
+  const panelClamp = useCallback((posX: number, posY: number) => {
+    const panelWidth = panelRef.current?.offsetWidth ?? PANEL_WIDTH;
+    const panelHeight = panelRef.current?.offsetHeight ?? PANEL_HEIGHT;
+    return clampPosition(posX, posY, panelWidth, panelHeight);
   }, []);
   const panel = useDraggable(
     () =>
@@ -210,6 +210,12 @@ export function TranslationPanel() {
                     segment={seg}
                     showTranslation={!!messages.toggleMap[seg.id]}
                     onToggle={() => messages.handleToggle(seg.id)}
+                    speakerName={
+                      seg.speakerId !== undefined
+                        ? messages.speakerNames[seg.speakerId]
+                        : undefined
+                    }
+                    onRenameSpeaker={messages.handleRenameSpeaker}
                   />
                 ))
               )}
@@ -236,9 +242,16 @@ export function TranslationPanel() {
                 background: 'rgba(0,0,0,0.2)'
               }}
             >
-              <span title="Audio chunks transcription stats">🎙️ {messages.analytics.chunksProcessed} ({messages.analytics.avgTranscribeMs}ms)</span>
-              <span title="Queue of segments waiting for translation">⏳ {messages.analytics.queueLength} pending</span>
-              <span title="Average translation time per API request">✨ {messages.analytics.avgTranslateMs}ms</span>
+              <span title="Audio chunks transcription stats">
+                🎙️ {messages.analytics.chunksProcessed} (
+                {messages.analytics.avgTranscribeMs}ms)
+              </span>
+              <span title="Queue of segments waiting for translation">
+                ⏳ {messages.analytics.queueLength} pending
+              </span>
+              <span title="Average translation time per API request">
+                ✨ {messages.analytics.avgTranslateMs}ms
+              </span>
             </div>
           )}
         </div>

@@ -8,11 +8,12 @@
  */
 
 import type { TranscriptSegment } from '../../types/segment';
+import { SpeakerBadge } from './SpeakerBadge';
 
 /** Format timestamp as HH:MM:SS. */
 function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], {
+  const date = new Date(ts);
+  return date.toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit'
@@ -23,12 +24,17 @@ interface SegmentRowProps {
   segment: TranscriptSegment;
   showTranslation: boolean;
   onToggle: () => void;
+  /** User-assigned name for the segment's speaker, if any. */
+  speakerName?: string;
+  onRenameSpeaker: (speakerId: number, name: string) => void;
 }
 
 export function SegmentRow({
   segment,
   showTranslation,
-  onToggle
+  onToggle,
+  speakerName,
+  onRenameSpeaker
 }: SegmentRowProps) {
   const hasTranslation = !!segment.translatedText;
   const displayText =
@@ -55,8 +61,24 @@ export function SegmentRow({
           marginBottom: '4px'
         }}
       >
-        <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)' }}>
-          {formatTime(segment.timestamp)}
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            minWidth: 0
+          }}
+        >
+          {segment.speakerId !== undefined && (
+            <SpeakerBadge
+              speakerId={segment.speakerId}
+              name={speakerName}
+              onRename={onRenameSpeaker}
+            />
+          )}
+          <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.4)' }}>
+            {formatTime(segment.timestamp)}
+          </span>
         </span>
         <button
           onClick={(e) => {

@@ -1,7 +1,7 @@
 /**
  * Offscreen Document — Handles Audio Capture, Voice Activity Detection (VAD), and Transcription.
- * 
- * In Manifest V3, we use an offscreen document because service workers cannot access 
+ *
+ * In Manifest V3, we use an offscreen document because service workers cannot access
  * the DOM-based getUserMedia API or run the ONNX-based VAD worklets.
  *
  * Pipeline per chunk:
@@ -17,6 +17,12 @@ import type {
   OffscreenRequestMessage
 } from './types/messages';
 import { SentenceBuffer } from './utils/sentenceBuffer';
+import {
+  extractSpeakerEmbedding,
+  disposeSpeakerEmbedder,
+  preloadSpeakerEmbedder
+} from './utils/speakerEmbedder';
+import { SpeakerClustering } from './utils/speakerClustering';
 import { debugLog, debugWarn, debugError } from './utils/debug';
 import { MicVAD, utils } from '@ricky0123/vad-web';
 
@@ -47,6 +53,18 @@ let processingQueue = Promise.resolve(); // Ensures sequential processing of aud
 
 const sentenceBuffer = new SentenceBuffer();
 const whisperPromptBuffer: string[] = []; // Context buffer for Whisper to maintain coherence
+
+const speakerClustering = new SpeakerClustering();
+/** Speaker tag owning the text currently held in the sentence buffer. */
+let bufferSpeakerId: number | undefined;
+
+/** Whether diarization is enabled for the cached settings. */
+function isSpeakerDetectionEnabled(): boolean {
+  if (!cachedSettings) {
+    return true; // Default to enabled if settings not loaded yet
+  }
+  return cachedSettings.speakerDetection !== false;
+}
 
 // ---------------------------------------------------------------------------
 // Message listener: Handles control signals from Background.
@@ -109,6 +127,12 @@ async function startRecording(streamId: string) {
 
   const sessionId = ++recordingSessionId;
   debugLog('Offscreen', `Starting recording session #${sessionId}`);
+
+  speakerClustering.reset();
+  bufferSpeakerId = undefined;
+  if (isSpeakerDetectionEnabled()) {
+    preloadSpeakerEmbedder();
+  }
 
   try {
     // 1. Capture the tab's audio stream via streamId from background
@@ -173,7 +197,7 @@ async function startRecording(streamId: string) {
 
           // Queue the chunk for sequential transcription processing.
           processingQueue = processingQueue
-            .then(() => processAudioChunk(blob, sessionId))
+            .then(() => processAudioChunk(blob, audio, sessionId))
             .catch((error) => {
               debugError(
                 'Offscreen',
@@ -186,7 +210,7 @@ async function startRecording(streamId: string) {
         }
       }
     };
-    
+
     // 4. Create and start the VAD instance.
     myvad = await MicVAD.new(vadOptions);
     myvad.start();
@@ -219,12 +243,15 @@ async function stopRecording() {
   // Final flush of any partially recorded sentences.
   const remaining = sentenceBuffer.drain();
   for (const sentence of remaining) {
-    await sendSegment(sentence);
+    await sendSegment(sentence, bufferSpeakerId);
   }
 
   await cleanupMediaResources();
   sentenceBuffer.reset();
   whisperPromptBuffer.length = 0;
+  speakerClustering.reset();
+  bufferSpeakerId = undefined;
+  await disposeSpeakerEmbedder();
 
   // Clear VAD status in the UI if we stopped while speaking.
   chrome.runtime
@@ -261,8 +288,13 @@ function isCurrentSession(sessionId: number) {
 
 /**
  * Sends an audio blob to Groq Whisper for transcription and dispatches sentences.
+ * The speaker embedding is computed concurrently with the transcription call.
  */
-async function processAudioChunk(blob: Blob, sessionId: number) {
+async function processAudioChunk(
+  blob: Blob,
+  audio: Float32Array,
+  sessionId: number
+) {
   if (!isCurrentSession(sessionId)) {
     return;
   }
@@ -283,26 +315,56 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
       cachedSettings.sourceLanguage && cachedSettings.sourceLanguage !== 'auto'
         ? cachedSettings.sourceLanguage
         : undefined;
-    
+
     // Provide recent transcription history to Whisper as a prompt for dynamic adaptation.
     const whisperPrompt =
       whisperPromptBuffer.length > 0
         ? whisperPromptBuffer.slice(-3).join(' ')
         : undefined;
 
+    const speakerEnabled = isSpeakerDetectionEnabled();
+    const embeddingPromise: Promise<Float32Array | null> = speakerEnabled
+      ? extractSpeakerEmbedding(audio).catch((error) => {
+          debugWarn('Offscreen', 'Speaker embedding failed', error);
+          return null;
+        })
+      : Promise.resolve(null);
+
     const startMs = performance.now();
-    const transcription = await transcribeAudioChunk(
-      blob,
-      cachedSettings.groqApiKey,
-      whisperModel,
-      whisperLanguage,
-      whisperPrompt
-    );
+    const [transcription, embedding] = await Promise.all([
+      transcribeAudioChunk(
+        blob,
+        cachedSettings.groqApiKey,
+        whisperModel,
+        whisperLanguage,
+        whisperPrompt
+      ),
+      embeddingPromise
+    ]);
     const durationMs = performance.now() - startMs;
 
     if (!transcription || !isCurrentSession(sessionId)) {
       return;
     }
+
+    const speakerId = speakerEnabled
+      ? speakerClustering.assign(embedding)
+      : undefined;
+
+    // Speaker turn change: flush buffered text under the previous speaker
+    // so sentences from different speakers are never merged.
+    if (
+      speakerEnabled &&
+      bufferSpeakerId !== undefined &&
+      speakerId !== bufferSpeakerId
+    ) {
+      const carryover = sentenceBuffer.drain();
+      for (const sentence of carryover) {
+        if (!isCurrentSession(sessionId)) break;
+        await sendSegment(sentence, bufferSpeakerId);
+      }
+    }
+    bufferSpeakerId = speakerId;
 
     // Update the Whisper context buffer.
     whisperPromptBuffer.push(transcription);
@@ -315,14 +377,18 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
 
     for (const sentence of sentences) {
       if (!isCurrentSession(sessionId)) break;
-      debugLog('Offscreen', `Sending segment: "${sentence.substring(0, 60)}…" (${Math.round(durationMs)}ms)`);
-      
+      debugLog(
+        'Offscreen',
+        `Sending segment: "${sentence.substring(0, 60)}…" (${Math.round(durationMs)}ms)`
+      );
+
       // Notify background about the new transcription segment.
       const msg: BackgroundRequestMessage = {
         target: 'background',
         type: 'TRANSCRIPTION_SEGMENT',
         text: sentence,
-        durationMs
+        durationMs,
+        speakerId
       };
       await chrome.runtime.sendMessage(msg).catch(() => undefined);
     }
@@ -341,12 +407,13 @@ async function processAudioChunk(blob: Blob, sessionId: number) {
 /**
  * Sends a raw text segment directly to the background service worker.
  */
-async function sendSegment(text: string): Promise<void> {
+async function sendSegment(text: string, speakerId?: number): Promise<void> {
   debugLog('Offscreen', `Sending segment: "${text.substring(0, 60)}…"`);
   const msg: BackgroundRequestMessage = {
     target: 'background',
     type: 'TRANSCRIPTION_SEGMENT',
-    text
+    text,
+    speakerId
   };
   await chrome.runtime.sendMessage(msg).catch(() => undefined);
 }

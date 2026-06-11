@@ -62,6 +62,7 @@ function App() {
             whisperModel={settings.whisperModel}
             translationModel={settings.translationModel}
             prompt={settings.prompt}
+            speakerDetection={settings.speakerDetection}
             onToggleTranslation={translation.toggleTranslation}
             onShowKeysChange={settings.setShowKeys}
             onGroqKeyChange={settings.setGroqKey}
@@ -71,6 +72,7 @@ function App() {
             onWhisperModelChange={settings.setWhisperModel}
             onTranslationModelChange={settings.setTranslationModel}
             onPromptChange={settings.setPrompt}
+            onSpeakerDetectionChange={settings.setSpeakerDetection}
           />
         ) : (
           <HistoryTab

@@ -20,9 +20,9 @@ interface PanelHeaderProps {
   onToggleAll: () => void; // Dispatches a mass toggle to all segments
   onClearHistory: () => void; // Wipes the segment session
   onToggleMinimize: () => void; // Compact/Expand view
-  onPointerDown: (e: React.PointerEvent) => void; // Dragging start
-  onPointerMove: (e: React.PointerEvent) => void; // Dragging move
-  onPointerUp: (e: React.PointerEvent) => void; // Dragging end
+  onPointerDown: (event: React.PointerEvent) => void; // Dragging start
+  onPointerMove: (event: React.PointerEvent) => void; // Dragging move
+  onPointerUp: (event: React.PointerEvent) => void; // Dragging end
 }
 
 export function PanelHeader({

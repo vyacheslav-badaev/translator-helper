@@ -12,13 +12,13 @@ import React, { useState, useRef, useCallback } from 'react';
 type Position = { x: number; y: number };
 
 /** A function that constrains raw (x, y) to valid viewport bounds. */
-type ClampFn = (x: number, y: number) => Position;
+type ClampFn = (posX: number, posY: number) => Position;
 
 export interface UseDraggableReturn {
   pos: Position;
-  onPointerDown: (e: React.PointerEvent) => void;
-  onPointerMove: (e: React.PointerEvent) => void;
-  onPointerUp: (e: React.PointerEvent) => void;
+  onPointerDown: (event: React.PointerEvent) => void;
+  onPointerMove: (event: React.PointerEvent) => void;
+  onPointerUp: (event: React.PointerEvent) => void;
 }
 
 /**
@@ -34,27 +34,27 @@ export function useDraggable(
   const dragStart = useRef<Position>({ x: 0, y: 0 });
 
   const onPointerDown = useCallback(
-    (e: React.PointerEvent) => {
+    (event: React.PointerEvent) => {
       isDragging.current = true;
-      dragStart.current = { x: e.clientX - pos.x, y: e.clientY - pos.y };
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      dragStart.current = { x: event.clientX - pos.x, y: event.clientY - pos.y };
+      (event.target as HTMLElement).setPointerCapture(event.pointerId);
     },
     [pos]
   );
 
   const onPointerMove = useCallback(
-    (e: React.PointerEvent) => {
+    (event: React.PointerEvent) => {
       if (!isDragging.current) return;
-      const rawX = e.clientX - dragStart.current.x;
-      const rawY = e.clientY - dragStart.current.y;
+      const rawX = event.clientX - dragStart.current.x;
+      const rawY = event.clientY - dragStart.current.y;
       setPos(clampFn(rawX, rawY));
     },
     [clampFn]
   );
 
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
+  const onPointerUp = useCallback((event: React.PointerEvent) => {
     isDragging.current = false;
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    (event.target as HTMLElement).releasePointerCapture(event.pointerId);
   }, []);
 
   return { pos, onPointerDown, onPointerMove, onPointerUp };

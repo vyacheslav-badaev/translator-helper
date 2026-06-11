@@ -13,4 +13,6 @@ export type StoredSettings = {
   translationModel?: string;
   sourceLanguage?: string;
   targetLanguage?: string;
+  /** Enables local speaker diarization (embedding model in offscreen). */
+  speakerDetection?: boolean;
 };

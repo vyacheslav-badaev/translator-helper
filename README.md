@@ -18,7 +18,9 @@ Chrome extension that captures active tab audio, transcribes speech in real time
 - **Source & Target Languages** — drop-downs that dynamically inject into the system prompt
 - **Auto-save** — all changes persist automatically (debounced 800 ms)
 - Collapsible API key section with ✓/missing indicators
-- Selectable **Whisper model** (Large v3, Large v3 Turbo) and **Gemini model** (2.5 Flash, 2.5 Flash Lite, 2.5 Pro, 3 Flash Preview, 3.1 Pro Preview)
+- Multi-provider **Translation models**: **Gemini** (2.5 Flash, 2.5 Flash Lite, 2.5 Pro, 3.1 Pro) and **Groq** (Llama 3 models)
+- Selectable **Whisper model** (Large v3, Large v3 Turbo)
+- **Speaker Detection (Beta)** toggle for local diarization
 - Custom system prompt for translation
 - Start/Stop button disabled until both API keys are provided
 
@@ -26,6 +28,7 @@ Chrome extension that captures active tab audio, transcribes speech in real time
 
 - Draggable and **resizable translation panel** in Shadow DOM — isolated from page styles.
 - Each segment shows translated text; tap to toggle original transcript.
+- **Speaker Identification** — individual segments are tagged with speaker badges when diarization is enabled.
 - **Visual Voice Indicators** — Heartbeat pulse in the header (red dot) and audio equalizer in the footer which animates in sync with speech.
 - **Analytics Footer** — Real-time telemetry showing transcription segments processed, queue length, and average latency (transcription & translation).
 - **Copy-to-clipboard** per segment, **clear history** button.
@@ -94,7 +97,9 @@ Chrome extension that captures active tab audio, transcribes speech in real time
 
 - Receives `streamId` from background and captures tab audio via `getUserMedia`
 - **Audio Passthrough** — captured audio routed back to speakers via `AudioContext` so users hear original content while translating
-- **Machine Learning VAD pipeline** using `@ricky0123/vad-web` (`MicVAD`)
+- **Machine Learning VAD & Diarization pipeline**:
+  - Uses `@ricky0123/vad-web` (`MicVAD`) for Voice Activity Detection
+  - Computes speaker embeddings via local ONNX model (`wespeaker_resnet34`) concurrently with transcription
   - Uses `silero_vad_v5.onnx` model with dialogue-optimized parameters
   - **Dialogue Optimization**: `redemptionMs: 300`, `negativeSpeechThreshold: 0.45` for fast speech segmentation in conversations
   - Dynamic `sourceLanguage` passed to Whisper (no longer hardcoded)
@@ -105,8 +110,8 @@ Chrome extension that captures active tab audio, transcribes speech in real time
 
 ### 3) API Layer
 
-- **`src/api/groq.ts`** — Whisper transcription with WAV MIME type + retry with exponential backoff on 429 (up to 3 retries, respects `Retry-After` header)
-- **`src/api/gemini.ts`** — Gemini translation with proper `system_instruction` field (128K+ token capacity vs 896 char limit) + context buffer; API key sent via `x-goog-api-key` header
+- **`src/api/groq.ts`** — Whisper transcription and multi-provider translation via Groq Chat Completions API + retry with exponential backoff on 429
+- **`src/api/gemini.ts`** — Gemini translation with proper `system_instruction` field (128K+ token capacity vs 896 char limit) + context buffer
 
 ### 4) Utilities
 
@@ -164,13 +169,14 @@ All settings are stored in **`chrome.storage.local`**:
 
 | Key              | Description                     |
 | ---------------- | ------------------------------- |
-| `groqApiKey`     | Groq API key for Whisper        |
-| `geminiApiKey`   | Google AI Studio key for Gemini |
-| `systemPrompt`   | Custom translation prompt       |
-| `whisperModel`   | Selected Whisper model id       |
-| `geminiModel`    | Selected Gemini model id        |
-| `sourceLanguage` | Audio source language code      |
-| `targetLanguage` | Translation target language     |
+| `groqApiKey`       | Groq API key for Whisper & Groq Translation |
+| `geminiApiKey`     | Google AI Studio key for Gemini             |
+| `systemPrompt`     | Custom translation prompt                   |
+| `whisperModel`     | Selected Whisper model id                   |
+| `translationModel` | Selected translation model id (Gemini/Groq) |
+| `sourceLanguage`   | Audio source language code                  |
+| `targetLanguage`   | Translation target language                 |
+| `speakerDetection` | Boolean to toggle ONNX diarization          |
 
 ## Getting Started
 

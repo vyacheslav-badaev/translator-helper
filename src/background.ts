@@ -15,6 +15,7 @@ import { TranslationQueue } from './utils/translationQueue';
 import {
   DEFAULT_TRANSLATION_MODEL,
   DEFAULT_SYSTEM_PROMPT,
+  MAX_SPEAKER_NAME_LENGTH,
   SOURCE_LANGUAGES,
   TARGET_LANGUAGES
 } from './constants';
@@ -50,6 +51,17 @@ let currentTargetLang = 'ru';
 let chunksProcessed = 0;
 let avgTranscribeMs = 0;
 let avgTranslateMs = 0;
+
+/** User-assigned speaker names for the current session (speakerId → name). */
+let sessionSpeakerNames: Record<number, string> = {};
+
+/** Broadcasts the full speaker-name map to all active content script tabs. */
+function broadcastSpeakerNames() {
+  void broadcastToActiveTabs({
+    type: 'SPEAKER_NAMES',
+    names: { ...sessionSpeakerNames }
+  });
+}
 
 /** Broadcasts the current analytics metrics to all active content script tabs. */
 function broadcastAnalytics() {
@@ -120,7 +132,10 @@ chrome.commands.onCommand.addListener((command: string) => {
  * Starts or stops the translation pipeline.
  * Handles offscreen document lifecycle, media stream capture, and settings injection.
  */
-async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
+async function handleToggleTranslation(
+  resumeSegments?: TranscriptSegment[],
+  resumeSpeakerNames?: Record<number, string>
+) {
   if (toggleInProgress) {
     debugWarn('Background', 'Toggle already in progress, ignoring');
     return;
@@ -213,6 +228,10 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
         avgTranslateMs = 0;
       }
 
+      // Speaker names are session-scoped: start every session with defaults or resumed ones.
+      sessionSpeakerNames = resumeSpeakerNames ? { ...resumeSpeakerNames } : {};
+      broadcastSpeakerNames();
+
       // 6. Start idle timer for auto-shutdown after silence
       resetIdleTimer(
         () => isTranslating,
@@ -260,13 +279,17 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
             firstWords + (titleText.length > firstWords.length ? '...' : ''),
           sourceLanguage: currentSourceLang,
           targetLanguage: currentTargetLang,
-          segments: [...currentSessionSegments]
+          segments: [...currentSessionSegments],
+          speakerNames: { ...sessionSpeakerNames }
         };
         saveSession(session).catch((e) =>
           debugError('Background', 'Failed to save session', e)
         );
         currentSessionSegments = [];
       }
+      
+      // Clear speaker names after they have been saved
+      sessionSpeakerNames = {};
     }
   } catch (error) {
     debugError('Background', 'Failed to toggle translation state:', error);
@@ -343,7 +366,8 @@ chrome.runtime.onMessage.addListener(
           originalText: request.text,
           translatedText: null,
           isTranslating: true,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          speakerId: request.speakerId
         };
         currentSessionSegments.push(segment);
         debugLog(
@@ -377,6 +401,22 @@ chrome.runtime.onMessage.addListener(
         return;
       }
 
+      if (request.type === 'RENAME_SPEAKER') {
+        const name = request.name.trim().slice(0, MAX_SPEAKER_NAME_LENGTH);
+        if (name) {
+          sessionSpeakerNames[request.speakerId] = name;
+        } else {
+          delete sessionSpeakerNames[request.speakerId];
+        }
+        debugLog(
+          'Background',
+          `Speaker ${request.speakerId} renamed to "${name || '(default)'}"`
+        );
+        broadcastSpeakerNames();
+        sendResponse({ status: 'renamed' });
+        return;
+      }
+
       // Voice Activity Detection (VAD) events broadcast
       if (
         request.type === 'VAD_SPEECH_START' ||
@@ -399,7 +439,10 @@ chrome.runtime.onMessage.addListener(
           sendResponse({ status: 'noop', isTranslating });
           return;
         }
-        await handleToggleTranslation(request.resumeSegments);
+        await handleToggleTranslation(
+          request.resumeSegments,
+          request.resumeSpeakerNames
+        );
         sendResponse({
           status: isTranslating ? 'started' : 'error',
           isTranslating
