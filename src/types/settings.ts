@@ -8,7 +8,9 @@ export type StoredSettings = {
   geminiApiKey?: string;
   systemPrompt?: string;
   whisperModel?: string;
+  /** @deprecated Use translationModel. Kept for reading legacy stored values during migration. */
   geminiModel?: string;
+  translationModel?: string;
   sourceLanguage?: string;
   targetLanguage?: string;
 };

@@ -10,6 +10,7 @@
 
 import {
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_TRANSLATION_MODEL,
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_WHISPER_MODEL,
   DEFAULT_SOURCE_LANGUAGE,
@@ -25,6 +26,7 @@ const ALL_FIELDS: Array<keyof StoredSettings> = [
   'systemPrompt',
   'whisperModel',
   'geminiModel',
+  'translationModel',
   'sourceLanguage',
   'targetLanguage'
 ];
@@ -45,7 +47,8 @@ export async function loadSettings(): Promise<StoredSettings> {
     return {
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       whisperModel: DEFAULT_WHISPER_MODEL,
-      geminiModel: DEFAULT_GEMINI_MODEL
+      geminiModel: DEFAULT_GEMINI_MODEL,
+      translationModel: DEFAULT_TRANSLATION_MODEL
     };
   }
 
@@ -68,9 +71,21 @@ export async function loadSettings(): Promise<StoredSettings> {
       : DEFAULT_WHISPER_MODEL;
 
   const geminiModel =
-    typeof values.geminiModel === 'string'
-      ? values.geminiModel
-      : DEFAULT_GEMINI_MODEL;
+    typeof values.geminiModel === 'string' ? values.geminiModel : undefined;
+
+  // Resolve translationModel with migration: if not set, migrate from legacy geminiModel.
+  let translationModel: string;
+  if (typeof values.translationModel === 'string' && values.translationModel) {
+    translationModel = values.translationModel;
+  } else if (geminiModel) {
+    translationModel = `gemini:${geminiModel}`;
+    debugLog(
+      'Settings',
+      `Migrated geminiModel → translationModel: ${translationModel}`
+    );
+  } else {
+    translationModel = DEFAULT_TRANSLATION_MODEL;
+  }
 
   if (!groqApiKey) debugWarn('Settings', 'Groq API key is missing');
   if (!geminiApiKey) debugWarn('Settings', 'Gemini API key is missing');
@@ -79,7 +94,7 @@ export async function loadSettings(): Promise<StoredSettings> {
     hasGeminiKey: !!geminiApiKey,
     promptLength: systemPrompt.length,
     whisperModel,
-    geminiModel
+    translationModel
   });
 
   const sourceLanguage =
@@ -98,6 +113,7 @@ export async function loadSettings(): Promise<StoredSettings> {
     systemPrompt,
     whisperModel,
     geminiModel,
+    translationModel,
     sourceLanguage,
     targetLanguage
   };
@@ -119,7 +135,7 @@ export async function saveSettings(settings: StoredSettings) {
     geminiApiKey: settings.geminiApiKey || '',
     systemPrompt: settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
     whisperModel: settings.whisperModel || DEFAULT_WHISPER_MODEL,
-    geminiModel: settings.geminiModel || DEFAULT_GEMINI_MODEL,
+    translationModel: settings.translationModel || DEFAULT_TRANSLATION_MODEL,
     sourceLanguage: settings.sourceLanguage || DEFAULT_SOURCE_LANGUAGE,
     targetLanguage: settings.targetLanguage || DEFAULT_TARGET_LANGUAGE
   });

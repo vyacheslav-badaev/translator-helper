@@ -10,7 +10,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { debugLog } from '../../utils/debug';
 import {
-  DEFAULT_GEMINI_MODEL,
+  DEFAULT_TRANSLATION_MODEL,
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_WHISPER_MODEL,
   DEFAULT_SOURCE_LANGUAGE,
@@ -25,7 +25,7 @@ export interface SettingsState {
   geminiKey: string;
   prompt: string;
   whisperModel: string;
-  geminiModel: string;
+  translationModel: string;
   sourceLanguage: string;
   targetLanguage: string;
   showKeys: boolean;
@@ -37,7 +37,7 @@ export interface SettingsActions {
   setGeminiKey: (v: string) => void;
   setPrompt: (v: string) => void;
   setWhisperModel: (v: string) => void;
-  setGeminiModel: (v: string) => void;
+  setTranslationModel: (v: string) => void;
   setSourceLanguage: (v: string) => void;
   setTargetLanguage: (v: string) => void;
   setShowKeys: (v: boolean) => void;
@@ -46,7 +46,7 @@ export interface SettingsActions {
 
 /** Combined return type: state + actions + derived flags. */
 export interface UseSettingsReturn extends SettingsState, SettingsActions {
-  /** True when both Groq and Gemini API keys are non-empty. */
+  /** True when keys required for the selected model are present. Groq key always required. */
   keysPresent: boolean;
 }
 
@@ -55,7 +55,9 @@ export function useSettings(): UseSettingsReturn {
   const [geminiKey, setGeminiKey] = useState('');
   const [prompt, setPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
   const [whisperModel, setWhisperModel] = useState(DEFAULT_WHISPER_MODEL);
-  const [geminiModel, setGeminiModel] = useState(DEFAULT_GEMINI_MODEL);
+  const [translationModel, setTranslationModel] = useState(
+    DEFAULT_TRANSLATION_MODEL
+  );
   const [sourceLanguage, setSourceLanguage] = useState(DEFAULT_SOURCE_LANGUAGE);
   const [targetLanguage, setTargetLanguage] = useState(DEFAULT_TARGET_LANGUAGE);
   const [showKeys, setShowKeys] = useState(false);
@@ -63,7 +65,8 @@ export function useSettings(): UseSettingsReturn {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loaded = useRef(false);
 
-  const keysPresent = !!(groqKey && geminiKey);
+  const geminiRequired = translationModel.startsWith('gemini:');
+  const keysPresent = !!(groqKey && (!geminiRequired || geminiKey));
 
   /** Build a StoredSettings object from current state, with optional overrides. */
   const buildSettingsObject = useCallback(
@@ -72,7 +75,7 @@ export function useSettings(): UseSettingsReturn {
       geminiApiKey: geminiKey,
       systemPrompt: prompt,
       whisperModel,
-      geminiModel,
+      translationModel,
       sourceLanguage,
       targetLanguage,
       ...overrides
@@ -82,7 +85,7 @@ export function useSettings(): UseSettingsReturn {
       geminiKey,
       prompt,
       whisperModel,
-      geminiModel,
+      translationModel,
       sourceLanguage,
       targetLanguage
     ]
@@ -127,7 +130,8 @@ export function useSettings(): UseSettingsReturn {
       if (settings.geminiApiKey) setGeminiKey(settings.geminiApiKey);
       if (settings.systemPrompt) setPrompt(settings.systemPrompt);
       if (settings.whisperModel) setWhisperModel(settings.whisperModel);
-      if (settings.geminiModel) setGeminiModel(settings.geminiModel);
+      if (settings.translationModel)
+        setTranslationModel(settings.translationModel);
       if (settings.sourceLanguage) setSourceLanguage(settings.sourceLanguage);
       if (settings.targetLanguage) setTargetLanguage(settings.targetLanguage);
       loaded.current = true;
@@ -139,7 +143,7 @@ export function useSettings(): UseSettingsReturn {
     geminiKey,
     prompt,
     whisperModel,
-    geminiModel,
+    translationModel,
     sourceLanguage,
     targetLanguage,
     showKeys,
@@ -148,7 +152,7 @@ export function useSettings(): UseSettingsReturn {
     setGeminiKey,
     setPrompt,
     setWhisperModel,
-    setGeminiModel,
+    setTranslationModel,
     setSourceLanguage,
     setTargetLanguage,
     setShowKeys,

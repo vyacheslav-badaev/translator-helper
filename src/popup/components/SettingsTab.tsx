@@ -7,7 +7,7 @@
  */
 
 import {
-  GEMINI_MODELS,
+  TRANSLATION_MODELS,
   WHISPER_MODELS,
   SOURCE_LANGUAGES,
   TARGET_LANGUAGES
@@ -22,7 +22,7 @@ interface SettingsTabProps {
   sourceLanguage: string;
   targetLanguage: string;
   whisperModel: string;
-  geminiModel: string;
+  translationModel: string;
   prompt: string;
   onToggleTranslation: () => void;
   onShowKeysChange: (v: boolean) => void;
@@ -31,7 +31,7 @@ interface SettingsTabProps {
   onSourceLanguageChange: (v: string) => void;
   onTargetLanguageChange: (v: string) => void;
   onWhisperModelChange: (v: string) => void;
-  onGeminiModelChange: (v: string) => void;
+  onTranslationModelChange: (v: string) => void;
   onPromptChange: (v: string) => void;
 }
 
@@ -44,7 +44,7 @@ export function SettingsTab({
   sourceLanguage,
   targetLanguage,
   whisperModel,
-  geminiModel,
+  translationModel,
   prompt,
   onToggleTranslation,
   onShowKeysChange,
@@ -53,7 +53,7 @@ export function SettingsTab({
   onSourceLanguageChange,
   onTargetLanguageChange,
   onWhisperModelChange,
-  onGeminiModelChange,
+  onTranslationModelChange,
   onPromptChange
 }: SettingsTabProps) {
   return (
@@ -184,18 +184,31 @@ export function SettingsTab({
           </div>
           <div>
             <label className="text-xs font-medium text-gray-500 mb-0.5 block">
-              Gemini
+              Translation Model
             </label>
             <select
               className="w-full px-2 py-1.5 border rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-              value={geminiModel}
-              onChange={(e) => onGeminiModelChange(e.target.value)}
+              value={translationModel}
+              onChange={(e) => onTranslationModelChange(e.target.value)}
             >
-              {GEMINI_MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
+              <optgroup label="Groq">
+                {TRANSLATION_MODELS.filter((m) => m.provider === 'groq').map(
+                  (m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  )
+                )}
+              </optgroup>
+              <optgroup label="Gemini">
+                {TRANSLATION_MODELS.filter((m) => m.provider === 'gemini').map(
+                  (m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  )
+                )}
+              </optgroup>
             </select>
           </div>
         </div>

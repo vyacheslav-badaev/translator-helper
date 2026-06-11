@@ -13,15 +13,21 @@ import { saveSession } from './storage/db';
 import type { SessionData } from './storage/db';
 import { TranslationQueue } from './utils/translationQueue';
 import {
-  DEFAULT_GEMINI_MODEL,
+  DEFAULT_TRANSLATION_MODEL,
   DEFAULT_SYSTEM_PROMPT,
   SOURCE_LANGUAGES,
   TARGET_LANGUAGES
 } from './constants';
 import { debugLog, debugWarn, debugError } from './utils/debug';
 
-import { setupOffscreenDocument, closeOffscreenDocument } from './background/offscreenManager';
-import { syncTranslationState, broadcastToActiveTabs } from './background/stateManager';
+import {
+  setupOffscreenDocument,
+  closeOffscreenDocument
+} from './background/offscreenManager';
+import {
+  syncTranslationState,
+  broadcastToActiveTabs
+} from './background/stateManager';
 import { resetIdleTimer, clearIdleTimer } from './background/idleTimer';
 
 /** Whether the translation pipeline is currently active. */
@@ -149,9 +155,15 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
 
       // 3. Load user settings and configure prompts
       const settings = await loadSettings();
-      if (!settings.groqApiKey || !settings.geminiApiKey) {
+      const translationModel =
+        settings.translationModel || DEFAULT_TRANSLATION_MODEL;
+
+      if (!settings.groqApiKey) {
+        throw new Error('Groq API key is missing (required for transcription)');
+      }
+      if (translationModel.startsWith('gemini:') && !settings.geminiApiKey) {
         throw new Error(
-          'Groq or Gemini API key is missing in extension settings'
+          'Gemini API key is missing for the selected translation model'
         );
       }
 
@@ -172,9 +184,10 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
 
       // 4. Initialize translation queue with latest settings
       translationQueue.configure(
-        settings.geminiApiKey,
+        settings.geminiApiKey || '',
+        settings.groqApiKey,
         finalPrompt,
-        settings.geminiModel || DEFAULT_GEMINI_MODEL
+        translationModel
       );
 
       // 5. Handle session resumption if segments were provided from history
@@ -201,7 +214,10 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
       }
 
       // 6. Start idle timer for auto-shutdown after silence
-      resetIdleTimer(() => isTranslating, () => void handleToggleTranslation());
+      resetIdleTimer(
+        () => isTranslating,
+        () => void handleToggleTranslation()
+      );
 
       // 7. Signal offscreen document to start audio capture
       const message: OffscreenRequestMessage = {
@@ -210,7 +226,11 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
         streamId,
         settings
       };
-      await chrome.runtime.sendMessage(message).catch((err) => debugWarn('Background', 'Offscreen message failed', err));
+      await chrome.runtime
+        .sendMessage(message)
+        .catch((err) =>
+          debugWarn('Background', 'Offscreen message failed', err)
+        );
       isTranslating = true;
       debugLog('Background', 'Translation started successfully');
     } else {
@@ -220,7 +240,7 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
         type: 'STOP_RECORDING'
       };
       await chrome.runtime.sendMessage(message).catch(() => undefined);
-      
+
       // 2. Cleanup resources
       await closeOffscreenDocument();
       translationQueue.clear();
@@ -263,11 +283,15 @@ async function handleToggleTranslation(resumeSegments?: TranscriptSegment[]) {
   } finally {
     toggleInProgress = false;
     // Notify all tabs about the final state sync
-    await syncTranslationState(isTranslating, currentSourceLang, currentTargetLang);
+    await syncTranslationState(
+      isTranslating,
+      currentSourceLang,
+      currentTargetLang
+    );
   }
 }
 
-/** 
+/**
  * Main message listener for incoming requests from Popup or Offscreen.
  */
 chrome.runtime.onMessage.addListener(
@@ -337,7 +361,10 @@ chrome.runtime.onMessage.addListener(
         }
 
         // Reset idle timer activity
-        resetIdleTimer(() => isTranslating, () => void handleToggleTranslation());
+        resetIdleTimer(
+          () => isTranslating,
+          () => void handleToggleTranslation()
+        );
 
         // Broadcast new segment to UI
         await broadcastToActiveTabs({ type: 'NEW_SEGMENT', segment });

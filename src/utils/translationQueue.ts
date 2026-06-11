@@ -10,8 +10,9 @@
  * which significantly improves translation consistency for long-running sessions.
  */
 
-import { translateText } from '../api/gemini';
-import { GEMINI_MODELS } from '../constants';
+import { translateText as translateTextGemini } from '../api/gemini';
+import { translateText as translateTextGroq } from '../api/groq';
+import { TRANSLATION_MODELS, parseModelId } from '../constants';
 import { debugLog, debugWarn, debugError } from './debug';
 
 /** Maximum number of segments allowed in a single batch. */
@@ -45,7 +46,8 @@ export class TranslationQueue {
   private lastCallTime = 0;
   private sessionId = 0; // Incremented on clear() to invalidate stale process loops
 
-  private apiKey = '';
+  private geminiApiKey = '';
+  private groqApiKey = '';
   private prompt = '';
   private model = '';
   private fallbackModels: string[] = []; // List of compatible models to try on failure
@@ -62,7 +64,7 @@ export class TranslationQueue {
    * @param onBatchComplete Dispatched for performance tracking (telemetry).
    */
   constructor(
-    onTranslation: TranslationCallback, 
+    onTranslation: TranslationCallback,
     onError: ErrorCallback,
     onBatchComplete?: (durationMs: number, batchSize: number) => void
   ) {
@@ -77,24 +79,41 @@ export class TranslationQueue {
   }
 
   /**
-   * Configures the queue with active API settings. 
-   * Prepares fallback models if using a Flash model.
+   * Configures the queue with active API settings.
+   * Builds a per-provider fallback chain based on the selected model.
    */
-  configure(apiKey: string, prompt: string, model: string): void {
-    this.apiKey = apiKey;
+  configure(
+    geminiApiKey: string,
+    groqApiKey: string,
+    prompt: string,
+    model: string
+  ): void {
+    this.geminiApiKey = geminiApiKey;
+    this.groqApiKey = groqApiKey;
     this.prompt = prompt;
     this.model = model;
     this.currentFallbackIndex = 0;
 
-    // Automatically detect and prepare fallback options for model redundancy.
-    if (model.includes('flash')) {
-      const allFlash = GEMINI_MODELS.filter((m) => m.id.includes('flash')).map(
-        (m) => m.id
-      );
+    const { provider, model: rawModel } = parseModelId(model);
+
+    if (provider === 'groq') {
+      const allGroq = TRANSLATION_MODELS.filter(
+        (m) => m.provider === 'groq'
+      ).map((m) => m.id);
+      this.fallbackModels = [model, ...allGroq.filter((m) => m !== model)];
+    } else if (rawModel.includes('flash')) {
+      const allFlash = TRANSLATION_MODELS.filter(
+        (m) => m.provider === 'gemini' && m.id.includes('flash')
+      ).map((m) => m.id);
       this.fallbackModels = [model, ...allFlash.filter((m) => m !== model)];
     } else {
       this.fallbackModels = [model];
     }
+
+    debugLog(
+      'TranslationQueue',
+      `Configured: model=${model}, fallbacks=${this.fallbackModels.length}`
+    );
   }
 
   /**
@@ -147,14 +166,20 @@ export class TranslationQueue {
         const currentModelToUse =
           this.fallbackModels[this.currentFallbackIndex] || this.model;
 
+        const { provider, model: rawModelId } = parseModelId(currentModelToUse);
+        const apiKey =
+          provider === 'groq' ? this.groqApiKey : this.geminiApiKey;
+        const translateFn =
+          provider === 'groq' ? translateTextGroq : translateTextGemini;
+
         if (batch.length === 1) {
           // Optimization: single segment processing for lower latency when traffic is low.
           const startMs = performance.now();
-          const result = await translateText(
+          const result = await translateFn(
             batch[0].text,
-            this.apiKey,
+            apiKey,
             this.prompt,
-            currentModelToUse,
+            rawModelId,
             this.contextBuffer.length > 0 ? [...this.contextBuffer] : undefined
           );
           const durationMs = performance.now() - startMs;
@@ -162,11 +187,15 @@ export class TranslationQueue {
           this.handleSuccess();
 
           if (result) {
-            this.updateContextAndNotify(batch[0].segmentId, batch[0].text, result);
+            this.updateContextAndNotify(
+              batch[0].segmentId,
+              batch[0].text,
+              result
+            );
             this.onBatchComplete?.(durationMs, 1);
           }
         } else {
-          // Batch processing: packs multiple segments into one prompt for reduced token usage 
+          // Batch processing: packs multiple segments into one prompt for reduced token usage
           // and better contextual awareness across related sentences.
           const numberedInput = batch
             .map((item, i) => `[${i + 1}] ${item.text}`)
@@ -177,11 +206,11 @@ export class TranslationQueue {
             '\n\nTranslate each numbered segment below. Return ONLY the translations in the same numbered format [1], [2], etc.';
 
           const startMs = performance.now();
-          const result = await translateText(
+          const result = await translateFn(
             numberedInput,
-            this.apiKey,
+            apiKey,
             batchPrompt,
-            currentModelToUse,
+            rawModelId,
             this.contextBuffer.length > 0 ? [...this.contextBuffer] : undefined
           );
           const durationMs = performance.now() - startMs;
@@ -194,10 +223,17 @@ export class TranslationQueue {
             for (let i = 0; i < batch.length; i++) {
               const translated = translations[i] || null;
               if (!translated) {
-                debugWarn('TranslationQueue', `Batch parse failed for segment #${batch[i].segmentId}`);
+                debugWarn(
+                  'TranslationQueue',
+                  `Batch parse failed for segment #${batch[i].segmentId}`
+                );
                 continue;
               }
-              this.updateContextAndNotify(batch[i].segmentId, batch[i].text, translated);
+              this.updateContextAndNotify(
+                batch[i].segmentId,
+                batch[i].text,
+                translated
+              );
               successCount++;
             }
             if (successCount > 0) {
@@ -214,15 +250,23 @@ export class TranslationQueue {
     this.isProcessing = false;
   }
 
-  /** Internal helper to reset backoff state on successful API call. */
+  /**
+   * Internal helper to reset backoff state on successful API call.
+   * The active fallback model is intentionally preserved: once a working
+   * model is found, subsequent batches keep using it instead of reverting
+   * to a potentially rate-limited primary on every success.
+   */
   private handleSuccess() {
     this.lastCallTime = Date.now();
     this.backoffMs = INITIAL_BACKOFF_MS;
-    this.currentFallbackIndex = 0;
   }
 
   /** Internal helper to manage context buffer and notify subscribers. */
-  private updateContextAndNotify(id: number, original: string, translated: string) {
+  private updateContextAndNotify(
+    id: number,
+    original: string,
+    translated: string
+  ) {
     this.contextBuffer.push(original);
     if (this.contextBuffer.length > 10) this.contextBuffer.shift();
     this.onTranslation(id, translated);
@@ -231,7 +275,11 @@ export class TranslationQueue {
   /**
    * Handles API errors with model fallbacks and exponential backoff.
    */
-  private async handleError(batch: QueueItem[], errMsg: string, loopSession: number) {
+  private async handleError(
+    batch: QueueItem[],
+    errMsg: string,
+    loopSession: number
+  ) {
     debugWarn('TranslationQueue', `Attempt failed: ${errMsg}`);
 
     // Try redundant models if available.
@@ -242,7 +290,7 @@ export class TranslationQueue {
     }
 
     // Handle rate-limiting (429) or transient server errors (5xx).
-      if (this.isRetryable(errMsg)) {
+    if (this.isRetryable(errMsg)) {
       debugWarn('TranslationQueue', `Retrying in ${this.backoffMs}ms`);
       this.queue.unshift(...batch);
       await this.sleep(this.backoffMs);
@@ -257,7 +305,8 @@ export class TranslationQueue {
 
   private isRetryable(msg: string): boolean {
     const codes = ['429', '503', '500', 'rate'];
-    return codes.some(code => msg.includes(code.toLowerCase()));
+    const normalized = msg.toLowerCase();
+    return codes.some((code) => normalized.includes(code));
   }
 
   /**
@@ -266,7 +315,10 @@ export class TranslationQueue {
   private parseBatchResult(result: string, expectedCount: number): string[] {
     const translations: string[] = [];
     for (let i = 1; i <= expectedCount; i++) {
-      const pattern = new RegExp(`\\[${i}\\]\\s*(.+?)(?=\\[${i + 1}\\]|$)`, 's');
+      const pattern = new RegExp(
+        `\\[${i}\\]\\s*(.+?)(?=\\[${i + 1}\\]|$)`,
+        's'
+      );
       const match = result.match(pattern);
       translations.push(match ? match[1].trim() : '');
     }

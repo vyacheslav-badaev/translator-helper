@@ -36,14 +36,113 @@ export const ERROR_TIMEOUT_MS = 5000;
 export const GROQ_TRANSCRIPTION_URL =
   'https://api.groq.com/openai/v1/audio/transcriptions';
 
+/** Groq Chat Completions REST endpoint (OpenAI-compatible). */
+export const GROQ_CHAT_COMPLETIONS_URL =
+  'https://api.groq.com/openai/v1/chat/completions';
+
 // ---------------------------------------------------------------------------
-// Gemini translation model
+// Translation model registry (multi-provider)
 // ---------------------------------------------------------------------------
 
-/** Default Gemini model used for translation requests. */
+export type TranslationModelProvider = 'gemini' | 'groq';
+
+export interface TranslationModel {
+  id: string;
+  provider: TranslationModelProvider;
+  label: string;
+  description: string;
+}
+
+/** Unified list of all available translation models across providers. */
+export const TRANSLATION_MODELS: TranslationModel[] = [
+  // --- Groq ---
+  {
+    id: 'groq:qwen/qwen3-32b',
+    provider: 'groq',
+    label: 'Groq: Qwen3 32B',
+    description: 'Best multilingual quality, ~662 TPS'
+  },
+  {
+    id: 'groq:llama-3.3-70b-versatile',
+    provider: 'groq',
+    label: 'Groq: Llama 3.3 70B Versatile',
+    description: 'Highest quality, ~394 TPS'
+  },
+  {
+    id: 'groq:llama-3.1-8b-instant',
+    provider: 'groq',
+    label: 'Groq: Llama 3.1 8B Instant',
+    description: 'Lowest latency, ~840 TPS'
+  },
+  {
+    id: 'groq:openai/gpt-oss-20b',
+    provider: 'groq',
+    label: 'Groq: GPT-OSS 20B',
+    description: 'Balanced speed and quality'
+  },
+  // --- Gemini ---
+  {
+    id: 'gemini:gemini-2.5-flash',
+    provider: 'gemini',
+    label: 'Gemini 2.5 Flash',
+    description: 'Fast and stable'
+  },
+  {
+    id: 'gemini:gemini-2.5-flash-lite',
+    provider: 'gemini',
+    label: 'Gemini 2.5 Flash Lite',
+    description: 'Lowest latency and cost'
+  },
+  {
+    id: 'gemini:gemini-2.5-pro',
+    provider: 'gemini',
+    label: 'Gemini 2.5 Pro',
+    description: 'Highest quality reasoning'
+  },
+  {
+    id: 'gemini:gemini-3-flash-preview',
+    provider: 'gemini',
+    label: 'Gemini 3 Flash (Preview)',
+    description: 'Next-gen fast model (preview)'
+  },
+  {
+    id: 'gemini:gemini-3.1-pro-preview',
+    provider: 'gemini',
+    label: 'Gemini 3.1 Pro (Preview)',
+    description: 'Next-gen flagship (preview)'
+  }
+];
+
+/** Default translation model for new installations. */
+export const DEFAULT_TRANSLATION_MODEL = 'groq:qwen/qwen3-32b';
+
+/**
+ * Parses a prefixed model ID into its provider and raw model name.
+ * Unprefixed IDs (legacy) default to the Gemini provider.
+ */
+export function parseModelId(id: string): {
+  provider: TranslationModelProvider;
+  model: string;
+} {
+  const colonIndex = id.indexOf(':');
+  if (colonIndex === -1) {
+    return { provider: 'gemini', model: id };
+  }
+  const prefix = id.slice(0, colonIndex);
+  const model = id.slice(colonIndex + 1);
+  const provider: TranslationModelProvider =
+    prefix === 'groq' ? 'groq' : 'gemini';
+  return { provider, model };
+}
+
+// ---------------------------------------------------------------------------
+// Gemini translation model (kept for migration compatibility)
+// ---------------------------------------------------------------------------
+
+/** @deprecated Use DEFAULT_TRANSLATION_MODEL. Kept for migration of existing settings. */
 export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
 
-/** Available Gemini models for the user to choose from in settings. */
+/** @deprecated Use TRANSLATION_MODELS. Kept for any remaining direct references. */
 export const GEMINI_MODELS = [
   {
     id: 'gemini-2.5-flash',

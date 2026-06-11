@@ -60,7 +60,7 @@ function App() {
             sourceLanguage={settings.sourceLanguage}
             targetLanguage={settings.targetLanguage}
             whisperModel={settings.whisperModel}
-            geminiModel={settings.geminiModel}
+            translationModel={settings.translationModel}
             prompt={settings.prompt}
             onToggleTranslation={translation.toggleTranslation}
             onShowKeysChange={settings.setShowKeys}
@@ -69,7 +69,7 @@ function App() {
             onSourceLanguageChange={settings.setSourceLanguage}
             onTargetLanguageChange={settings.setTargetLanguage}
             onWhisperModelChange={settings.setWhisperModel}
-            onGeminiModelChange={settings.setGeminiModel}
+            onTranslationModelChange={settings.setTranslationModel}
             onPromptChange={settings.setPrompt}
           />
         ) : (

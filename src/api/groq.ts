@@ -5,7 +5,10 @@
  * transcription using the Whisper Large V3 model.
  */
 
-import { GROQ_TRANSCRIPTION_URL } from '../constants';
+import {
+  GROQ_TRANSCRIPTION_URL,
+  GROQ_CHAT_COMPLETIONS_URL
+} from '../constants';
 import { debugLog, debugWarn, debugError } from '../utils/debug';
 
 /** Maximum number of retry attempts on 429 rate-limit errors. */
@@ -13,6 +16,16 @@ const MAX_RETRIES = 3;
 
 /** Initial backoff (ms) before first retry. Doubled on each subsequent attempt. */
 const INITIAL_BACKOFF_MS = 5000;
+
+/** Shape of the JSON response from the Groq Chat Completions endpoint. */
+type GroqChatCompletionResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+  error?: { message?: string };
+};
 
 /** Shape of the JSON response from the Groq transcription endpoint. */
 type GroqTranscriptionResponse = {
@@ -121,4 +134,96 @@ export async function transcribeAudioChunk(
   // All retries exhausted.
   debugError('Groq', 'Rate limit retries exhausted');
   throw new Error('Groq rate limit exceeded — retries exhausted');
+}
+
+/**
+ * Translates a transcribed text fragment via Groq Chat Completions.
+ * @param input                  - Raw transcription from Groq Whisper.
+ * @param apiKey                 - Groq API key.
+ * @param prompt                 - System prompt (user-configurable).
+ * @param model                  - Raw Groq model identifier (e.g. 'qwen/qwen3-32b').
+ * @param previousTranscriptions - Optional context buffer (last N phrases)
+ *                                 to improve coherence of the translation.
+ * @returns Translated text, or `null` if the model returned nothing.
+ */
+export async function translateText(
+  input: string,
+  apiKey: string,
+  prompt: string,
+  model: string,
+  previousTranscriptions?: string[]
+): Promise<string | null> {
+  debugLog(
+    'Groq',
+    `Translating (model=${model}): "${input.substring(0, 60)}${input.length > 60 ? '…' : ''}"`
+  );
+
+  let systemInstruction = prompt;
+
+  if (previousTranscriptions && previousTranscriptions.length > 0) {
+    const context = previousTranscriptions.join('\n');
+    systemInstruction += `\n\nPrevious context (for reference only, do NOT translate this again):\n${context}`;
+    debugLog(
+      'Groq',
+      `Context buffer attached (${previousTranscriptions.length} phrases)`
+    );
+  }
+
+  const userMessage = `Original Text: ${input}`;
+
+  const isQwen = model.toLowerCase().includes('qwen');
+
+  const requestBody: Record<string, unknown> = {
+    model,
+    messages: [
+      { role: 'system', content: systemInstruction },
+      { role: 'user', content: userMessage }
+    ]
+  };
+
+  if (isQwen) {
+    requestBody['reasoning_format'] = 'hidden';
+  }
+
+  const response = await fetch(GROQ_CHAT_COMPLETIONS_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  // Check response status before parsing JSON to catch non-JSON error
+  // responses (e.g. 502/504 gateway errors with HTML bodies).
+  if (!response.ok) {
+    let errorMsg = `Groq API request failed (${response.status})`;
+    try {
+      const errorData = (await response.json()) as GroqChatCompletionResponse;
+      errorMsg = errorData.error?.message || errorMsg;
+    } catch {
+      // JSON parse failed, use generic error message with status code.
+    }
+    debugError('Groq', `Translation failed: ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
+  const data = (await response.json()) as GroqChatCompletionResponse;
+
+  let translation = data.choices?.[0]?.message?.content?.trim();
+
+  if (translation) {
+    translation = translation.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  }
+
+  if (translation) {
+    debugLog(
+      'Groq',
+      `Translation result: "${translation.substring(0, 80)}${translation.length > 80 ? '…' : ''}"`
+    );
+  } else {
+    debugLog('Groq', 'Translation returned empty response');
+  }
+
+  return translation || null;
 }
