@@ -27,6 +27,13 @@ const INITIAL_BACKOFF_MS = 5000;
 /** Maximum allowed backoff delay. */
 const MAX_BACKOFF_MS = 60000;
 
+/**
+ * Maximum time to wait for a local LLM translation result before giving up.
+ * Guards the processing loop against a crashed or unresponsive offscreen
+ * document, which would otherwise stall the queue indefinitely.
+ */
+const LOCAL_TRANSLATE_TIMEOUT_MS = 90000;
+
 /** Internal representation of a queued transcription fragment. */
 interface QueueItem {
   segmentId: number;
@@ -39,6 +46,24 @@ type TranslationCallback = (segmentId: number, translatedText: string) => void;
 /** Callback for reporting critical translation errors. */
 type ErrorCallback = (message: string) => void;
 
+/** Everything the queue needs to reach the configured translation backend. */
+export interface TranslationQueueConfig {
+  geminiApiKey: string;
+  groqApiKey: string;
+  /** User-editable prompt, applied to the cloud providers. */
+  prompt: string;
+  /** Fixed prompt applied to the local model. */
+  localPrompt: string;
+  model: string;
+}
+
+/** Resolver map for in-flight local LLM translation requests. */
+interface PendingLocalTranslation {
+  resolve: (result: string) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class TranslationQueue {
   private queue: QueueItem[] = [];
   private isProcessing = false;
@@ -49,10 +74,13 @@ export class TranslationQueue {
   private geminiApiKey = '';
   private groqApiKey = '';
   private prompt = '';
+  private localPrompt = '';
   private model = '';
   private fallbackModels: string[] = []; // List of compatible models to try on failure
   private currentFallbackIndex = 0;
   private contextBuffer: string[] = []; // Historical context for the LLM
+
+  private pendingLocalTranslations = new Map<string, PendingLocalTranslation>();
 
   private onTranslation: TranslationCallback;
   private onError: ErrorCallback;
@@ -82,15 +110,12 @@ export class TranslationQueue {
    * Configures the queue with active API settings.
    * Builds a per-provider fallback chain based on the selected model.
    */
-  configure(
-    geminiApiKey: string,
-    groqApiKey: string,
-    prompt: string,
-    model: string
-  ): void {
+  configure(config: TranslationQueueConfig): void {
+    const { geminiApiKey, groqApiKey, prompt, localPrompt, model } = config;
     this.geminiApiKey = geminiApiKey;
     this.groqApiKey = groqApiKey;
     this.prompt = prompt;
+    this.localPrompt = localPrompt;
     this.model = model;
     this.currentFallbackIndex = 0;
 
@@ -129,6 +154,26 @@ export class TranslationQueue {
   }
 
   /**
+   * Resolves or rejects a pending local LLM translation request.
+   * Called by the background service worker when it receives LOCAL_LLM_TRANSLATE_RESULT.
+   */
+  resolveLocalTranslation(
+    requestId: string,
+    result: string | null,
+    error?: string
+  ): void {
+    const pending = this.pendingLocalTranslations.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingLocalTranslations.delete(requestId);
+    if (error || result === null) {
+      pending.reject(new Error(error ?? 'Local LLM returned null result'));
+    } else {
+      pending.resolve(result);
+    }
+  }
+
+  /**
    * Clears the queue, resets history, and increments the session ID to stop the current loop.
    */
   clear(): void {
@@ -137,6 +182,11 @@ export class TranslationQueue {
     this.contextBuffer = [];
     this.isProcessing = false;
     this.backoffMs = INITIAL_BACKOFF_MS;
+    for (const pending of this.pendingLocalTranslations.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Translation queue cleared'));
+    }
+    this.pendingLocalTranslations.clear();
   }
 
   /**
@@ -148,6 +198,42 @@ export class TranslationQueue {
     const loopSession = this.sessionId;
 
     while (this.queue.length > 0 && loopSession === this.sessionId) {
+      const { provider } = parseModelId(this.model);
+
+      if (provider === 'local') {
+        // Local LLM: no batching, no rate limiting — inference is its own bottleneck.
+        const item = this.queue.shift()!;
+        debugLog(
+          'TranslationQueue',
+          `[local] Translating segment #${item.segmentId}`
+        );
+        try {
+          const startMs = performance.now();
+          const translated = await this.sendLocalTranslate(item);
+          const durationMs = performance.now() - startMs;
+          if (loopSession !== this.sessionId) break;
+          if (translated) {
+            this.updateContextAndNotify(item.segmentId, item.text, translated);
+            this.onBatchComplete?.(durationMs, 1);
+          } else {
+            // Already reported by the local model wrapper; skipping here keeps
+            // the segment untranslated instead of counting it as a success.
+            debugWarn(
+              'TranslationQueue',
+              `[local] Segment #${item.segmentId} left untranslated`
+            );
+          }
+        } catch (error) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          debugError(
+            'TranslationQueue',
+            `[local] Translation error: ${errMsg}`
+          );
+          this.onError(errMsg);
+        }
+        continue;
+      }
+
       // 1. Minimum delay guard for rate-limiting.
       const elapsed = Date.now() - this.lastCallTime;
       if (elapsed < MIN_DELAY_MS) {
@@ -166,11 +252,12 @@ export class TranslationQueue {
         const currentModelToUse =
           this.fallbackModels[this.currentFallbackIndex] || this.model;
 
-        const { provider, model: rawModelId } = parseModelId(currentModelToUse);
+        const { provider: batchProvider, model: rawModelId } =
+          parseModelId(currentModelToUse);
         const apiKey =
-          provider === 'groq' ? this.groqApiKey : this.geminiApiKey;
+          batchProvider === 'groq' ? this.groqApiKey : this.geminiApiKey;
         const translateFn =
-          provider === 'groq' ? translateTextGroq : translateTextGemini;
+          batchProvider === 'groq' ? translateTextGroq : translateTextGemini;
 
         if (batch.length === 1) {
           // Optimization: single segment processing for lower latency when traffic is low.
@@ -301,6 +388,39 @@ export class TranslationQueue {
       debugError('TranslationQueue', `Critical translation error: ${errMsg}`);
       this.onError(errMsg);
     }
+  }
+
+  /**
+   * Sends a LOCAL_LLM_TRANSLATE message to the offscreen document via background
+   * and returns a Promise that resolves when the result arrives.
+   */
+  private sendLocalTranslate(item: QueueItem): Promise<string> {
+    const requestId = crypto.randomUUID();
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingLocalTranslations.delete(requestId)) {
+          reject(
+            new Error(
+              `Local LLM translation timed out after ${LOCAL_TRANSLATE_TIMEOUT_MS}ms`
+            )
+          );
+        }
+      }, LOCAL_TRANSLATE_TIMEOUT_MS);
+      this.pendingLocalTranslations.set(requestId, { resolve, reject, timer });
+      chrome.runtime
+        .sendMessage({
+          target: 'offscreen',
+          type: 'LOCAL_LLM_TRANSLATE',
+          requestId,
+          text: item.text,
+          prompt: this.localPrompt
+        })
+        .catch((err: unknown) => {
+          clearTimeout(timer);
+          this.pendingLocalTranslations.delete(requestId);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        });
+    });
   }
 
   private isRetryable(msg: string): boolean {

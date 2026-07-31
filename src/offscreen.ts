@@ -10,7 +10,11 @@
  */
 
 import { transcribeAudioChunk } from './api/groq';
-import { DEFAULT_WHISPER_MODEL } from './constants';
+import { checkWebGpuSupport } from './utils/hardwareCheck';
+import {
+  DEFAULT_WHISPER_MODEL,
+  DEFAULT_LOCAL_WHISPER_MODEL
+} from './constants';
 import type { StoredSettings } from './types/settings';
 import type {
   BackgroundRequestMessage,
@@ -25,6 +29,18 @@ import {
 import { SpeakerClustering } from './utils/speakerClustering';
 import { debugLog, debugWarn, debugError } from './utils/debug';
 import { MicVAD, utils } from '@ricky0123/vad-web';
+
+/** Lazy-load transformers-backed local LLM (keeps cloud offscreen lean). */
+async function getLocalLlm() {
+  const { localLlm } = await import('./api/localLlm');
+  return localLlm;
+}
+
+/** Lazy-load transformers-backed local Whisper. */
+async function getLocalWhisper() {
+  const { localWhisper } = await import('./api/localWhisper');
+  return localWhisper;
+}
 
 // ---------------------------------------------------------------------------
 // Types and Constraints
@@ -104,6 +120,135 @@ chrome.runtime.onMessage.addListener(
       void stopRecording().then(() =>
         sendResponse({ status: 'recording stopped' })
       );
+      return true;
+    }
+
+    if (request.type === 'LOCAL_LLM_DOWNLOAD') {
+      void (async () => {
+        try {
+          const localLlm = await getLocalLlm();
+          await localLlm.downloadAndCache((percent, phase) => {
+            chrome.runtime
+              .sendMessage({
+                target: 'background',
+                type: 'LOCAL_LLM_PROGRESS',
+                percent,
+                phase
+              } as BackgroundRequestMessage)
+              .catch(() => undefined);
+          });
+          // Free GPU memory before background closes this offscreen document.
+          await localLlm.unload();
+          sendResponse({ status: 'done' });
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : 'LLM download failed';
+          sendResponse({ status: 'error', message });
+        }
+      })();
+      return true;
+    }
+
+    if (request.type === 'LOCAL_LLM_CHECK_HARDWARE') {
+      void (async () => {
+        try {
+          const result = await checkWebGpuSupport();
+          sendResponse({ status: 'done', result });
+        } catch (err) {
+          sendResponse({
+            status: 'error',
+            message:
+              err instanceof Error ? err.message : 'Hardware check failed'
+          });
+        }
+      })();
+      return true;
+    }
+
+    if (request.type === 'LOCAL_LLM_LOAD') {
+      // Surface progress in case the persisted cache flag is stale and the
+      // model must be re-downloaded, so the UI is not silently blocked.
+      void (async () => {
+        try {
+          const localLlm = await getLocalLlm();
+          await localLlm.loadFromCache((percent, phase) => {
+            chrome.runtime
+              .sendMessage({
+                target: 'background',
+                type: 'LOCAL_LLM_PROGRESS',
+                percent,
+                phase
+              } as BackgroundRequestMessage)
+              .catch(() => undefined);
+          });
+          sendResponse({ status: 'loaded' });
+        } catch (err: unknown) {
+          sendResponse({
+            status: 'error',
+            message: err instanceof Error ? err.message : 'LLM load failed'
+          });
+        }
+      })();
+      return true;
+    }
+
+    if (request.type === 'LOCAL_LLM_UNLOAD') {
+      void (async () => {
+        try {
+          const localLlm = await getLocalLlm();
+          await localLlm.unload();
+          sendResponse({ status: 'unloaded' });
+        } catch {
+          sendResponse({ status: 'unloaded' });
+        }
+      })();
+      return true;
+    }
+
+    if (request.type === 'LOCAL_LLM_TRANSLATE') {
+      const { requestId, text, prompt } = request;
+      void (async () => {
+        try {
+          const localLlm = await getLocalLlm();
+          const result = await localLlm.translate(text, prompt);
+          chrome.runtime
+            .sendMessage({
+              target: 'background',
+              type: 'LOCAL_LLM_TRANSLATE_RESULT',
+              requestId,
+              result
+            } as BackgroundRequestMessage)
+            .catch(() => undefined);
+        } catch (err) {
+          chrome.runtime
+            .sendMessage({
+              target: 'background',
+              type: 'LOCAL_LLM_TRANSLATE_RESULT',
+              requestId,
+              result: null,
+              error: err instanceof Error ? err.message : 'LLM translate failed'
+            } as BackgroundRequestMessage)
+            .catch(() => undefined);
+        }
+        sendResponse({ status: 'done' });
+      })();
+      return true;
+    }
+
+    if (request.type === 'LOCAL_WHISPER_LOAD') {
+      const modelId = request.modelId;
+      void (async () => {
+        try {
+          const localWhisper = await getLocalWhisper();
+          await localWhisper.loadModel(modelId);
+          sendResponse({ status: 'loaded' });
+        } catch (err: unknown) {
+          sendResponse({
+            status: 'error',
+            message: err instanceof Error ? err.message : 'Whisper load failed'
+          });
+        }
+      })();
       return true;
     }
   }
@@ -253,6 +398,9 @@ async function stopRecording() {
   bufferSpeakerId = undefined;
   await disposeSpeakerEmbedder();
 
+  // Drop session settings so a stale snapshot cannot leak into the next session.
+  cachedSettings = null;
+
   // Clear VAD status in the UI if we stopped while speaking.
   chrome.runtime
     .sendMessage({ target: 'background', type: 'VAD_SPEECH_END' })
@@ -305,21 +453,16 @@ async function processAudioChunk(
   );
 
   try {
-    if (!cachedSettings?.groqApiKey) {
+    const useLocalAsr = cachedSettings?.asrProvider === 'local';
+
+    if (!useLocalAsr && !cachedSettings?.groqApiKey) {
       await notifyPipelineError('Groq API key not available');
       return;
     }
 
-    const whisperModel = cachedSettings.whisperModel || DEFAULT_WHISPER_MODEL;
     const whisperLanguage =
-      cachedSettings.sourceLanguage && cachedSettings.sourceLanguage !== 'auto'
+      cachedSettings?.sourceLanguage && cachedSettings.sourceLanguage !== 'auto'
         ? cachedSettings.sourceLanguage
-        : undefined;
-
-    // Provide recent transcription history to Whisper as a prompt for dynamic adaptation.
-    const whisperPrompt =
-      whisperPromptBuffer.length > 0
-        ? whisperPromptBuffer.slice(-3).join(' ')
         : undefined;
 
     const speakerEnabled = isSpeakerDetectionEnabled();
@@ -331,67 +474,55 @@ async function processAudioChunk(
       : Promise.resolve(null);
 
     const startMs = performance.now();
-    const [transcription, embedding] = await Promise.all([
+    let transcription: string | null;
+
+    if (useLocalAsr) {
+      const localWhisper = await getLocalWhisper();
+      if (localWhisper.getStatus() !== 'ready') {
+        const modelId =
+          cachedSettings?.localWhisperModel ?? DEFAULT_LOCAL_WHISPER_MODEL;
+        await localWhisper.loadModel(modelId);
+      }
+      const [localText, embedding] = await Promise.all([
+        localWhisper.transcribe(audio, whisperLanguage),
+        embeddingPromise
+      ]);
+      transcription = localText || null;
+      await finishTranscriptionChunk(
+        transcription,
+        embedding,
+        speakerEnabled,
+        sessionId,
+        startMs,
+        'local-asr'
+      );
+      return;
+    }
+
+    // --- Groq ASR path ---
+    const whisperModel = cachedSettings!.whisperModel || DEFAULT_WHISPER_MODEL;
+    const whisperPrompt =
+      whisperPromptBuffer.length > 0
+        ? whisperPromptBuffer.slice(-3).join(' ')
+        : undefined;
+
+    const [groqTranscription, embedding] = await Promise.all([
       transcribeAudioChunk(
         blob,
-        cachedSettings.groqApiKey,
+        cachedSettings!.groqApiKey!,
         whisperModel,
         whisperLanguage,
         whisperPrompt
       ),
       embeddingPromise
     ]);
-    const durationMs = performance.now() - startMs;
-
-    if (!transcription || !isCurrentSession(sessionId)) {
-      return;
-    }
-
-    const speakerId = speakerEnabled
-      ? speakerClustering.assign(embedding)
-      : undefined;
-
-    // Speaker turn change: flush buffered text under the previous speaker
-    // so sentences from different speakers are never merged.
-    if (
-      speakerEnabled &&
-      bufferSpeakerId !== undefined &&
-      speakerId !== bufferSpeakerId
-    ) {
-      const carryover = sentenceBuffer.drain();
-      for (const sentence of carryover) {
-        if (!isCurrentSession(sessionId)) break;
-        await sendSegment(sentence, bufferSpeakerId);
-      }
-    }
-    bufferSpeakerId = speakerId;
-
-    // Update the Whisper context buffer.
-    whisperPromptBuffer.push(transcription);
-    if (whisperPromptBuffer.length > 5) {
-      whisperPromptBuffer.shift();
-    }
-
-    // Segment the raw transcription into individual sentences.
-    const sentences = sentenceBuffer.flush(transcription);
-
-    for (const sentence of sentences) {
-      if (!isCurrentSession(sessionId)) break;
-      debugLog(
-        'Offscreen',
-        `Sending segment: "${sentence.substring(0, 60)}…" (${Math.round(durationMs)}ms)`
-      );
-
-      // Notify background about the new transcription segment.
-      const msg: BackgroundRequestMessage = {
-        target: 'background',
-        type: 'TRANSCRIPTION_SEGMENT',
-        text: sentence,
-        durationMs,
-        speakerId
-      };
-      await chrome.runtime.sendMessage(msg).catch(() => undefined);
-    }
+    await finishTranscriptionChunk(
+      groqTranscription,
+      embedding,
+      speakerEnabled,
+      sessionId,
+      startMs
+    );
   } catch (error) {
     debugError('Offscreen', 'Pipeline error during chunk processing:', error);
     await notifyPipelineError(
@@ -401,6 +532,68 @@ async function processAudioChunk(
     );
   } finally {
     // Optional: add specific cleanup here if needed.
+  }
+}
+
+/**
+ * Shared post-ASR path: speaker assignment, sentence buffering, and dispatch.
+ */
+async function finishTranscriptionChunk(
+  transcription: string | null,
+  embedding: Float32Array | null,
+  speakerEnabled: boolean,
+  sessionId: number,
+  startMs: number,
+  logTag?: string
+): Promise<void> {
+  const durationMs = performance.now() - startMs;
+
+  if (!transcription || !isCurrentSession(sessionId)) {
+    return;
+  }
+
+  const speakerId = speakerEnabled
+    ? speakerClustering.assign(embedding)
+    : undefined;
+
+  // Speaker turn change: flush buffered text under the previous speaker
+  // so sentences from different speakers are never merged.
+  if (
+    speakerEnabled &&
+    bufferSpeakerId !== undefined &&
+    speakerId !== bufferSpeakerId
+  ) {
+    const carryover = sentenceBuffer.drain();
+    for (const sentence of carryover) {
+      if (!isCurrentSession(sessionId)) break;
+      await sendSegment(sentence, bufferSpeakerId);
+    }
+  }
+  bufferSpeakerId = speakerId;
+
+  whisperPromptBuffer.push(transcription);
+  if (whisperPromptBuffer.length > 5) {
+    whisperPromptBuffer.shift();
+  }
+
+  const sentences = sentenceBuffer.flush(transcription);
+  const prefix = logTag ? `[${logTag}] ` : '';
+
+  for (const sentence of sentences) {
+    if (!isCurrentSession(sessionId)) break;
+    debugLog(
+      'Offscreen',
+      `${prefix}Sending segment: "${sentence.substring(0, 60)}…" (${Math.round(durationMs)}ms)`
+    );
+
+    const msg: BackgroundRequestMessage = {
+      target: 'background',
+      type: 'TRANSCRIPTION_SEGMENT',
+      text: sentence,
+      durationMs,
+      speakerId
+    };
+    await chrome.runtime.sendMessage(msg).catch(() => undefined);
   }
 }
 

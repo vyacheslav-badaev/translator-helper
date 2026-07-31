@@ -15,10 +15,14 @@ import {
   DEFAULT_WHISPER_MODEL,
   DEFAULT_SOURCE_LANGUAGE,
   DEFAULT_TARGET_LANGUAGE,
-  DEFAULT_SPEAKER_DETECTION
+  DEFAULT_SPEAKER_DETECTION,
+  DEFAULT_ASR_PROVIDER,
+  DEFAULT_LOCAL_WHISPER_MODEL
 } from '../../constants';
+import type { LocalWhisperModelId } from '../../constants';
 import { loadSettings, saveSettings } from '../../storage/settings';
 import type { StoredSettings } from '../../types/settings';
+import type { HardwareCheckResult } from '../../utils/hardwareCheck';
 
 /** Read-only snapshot of every settings field. */
 export interface SettingsState {
@@ -31,6 +35,13 @@ export interface SettingsState {
   targetLanguage: string;
   speakerDetection: boolean;
   showKeys: boolean;
+  asrProvider: 'groq' | 'local';
+  localWhisperModel: LocalWhisperModelId;
+  localLlmModelCached: boolean;
+  localLlmDownloadPercent: number | null;
+  localLlmDownloadPhase: 'download' | 'warmup' | null;
+  localLlmHardwareResult: HardwareCheckResult | null;
+  localLlmDownloadError: string | null;
 }
 
 /** Setters and imperative actions exposed by the hook. */
@@ -44,12 +55,14 @@ export interface SettingsActions {
   setTargetLanguage: (value: string) => void;
   setSpeakerDetection: (value: boolean) => void;
   setShowKeys: (isVisible: boolean) => void;
+  setAsrProvider: (value: 'groq' | 'local') => void;
+  setLocalWhisperModel: (value: LocalWhisperModelId) => void;
   flushSettings: () => Promise<void>;
 }
 
 /** Combined return type: state + actions + derived flags. */
 export interface UseSettingsReturn extends SettingsState, SettingsActions {
-  /** True when keys required for the selected model are present. Groq key always required. */
+  /** True when keys/models required for the selected providers are present. */
   keysPresent: boolean;
 }
 
@@ -67,12 +80,37 @@ export function useSettings(): UseSettingsReturn {
     DEFAULT_SPEAKER_DETECTION
   );
   const [showKeys, setShowKeys] = useState(false);
+  const [asrProvider, setAsrProvider] = useState<'groq' | 'local'>(
+    DEFAULT_ASR_PROVIDER
+  );
+  const [localWhisperModel, setLocalWhisperModel] = useState<LocalWhisperModelId>(
+    DEFAULT_LOCAL_WHISPER_MODEL
+  );
+  const [localLlmModelCached, setLocalLlmModelCached] = useState(false);
+  const [localLlmDownloadPercent, setLocalLlmDownloadPercent] = useState<
+    number | null
+  >(null);
+  const [localLlmDownloadPhase, setLocalLlmDownloadPhase] = useState<
+    'download' | 'warmup' | null
+  >(null);
+  const [localLlmHardwareResult, setLocalLlmHardwareResult] =
+    useState<HardwareCheckResult | null>(null);
+  const [localLlmDownloadError, setLocalLlmDownloadError] = useState<
+    string | null
+  >(null);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loaded = useRef(false);
 
-  const geminiRequired = translationModel.startsWith('gemini:');
-  const keysPresent = !!(groqKey && (!geminiRequired || geminiKey));
+  const needsGroqKey =
+    asrProvider === 'groq' || translationModel.startsWith('groq:');
+  const needsGeminiKey = translationModel.startsWith('gemini:');
+  const needsLocalLlm = translationModel.startsWith('local:');
+  const keysPresent = !!(
+    (!needsGroqKey || groqKey) &&
+    (!needsGeminiKey || geminiKey) &&
+    (!needsLocalLlm || localLlmModelCached)
+  );
 
   /** Build a StoredSettings object from current state, with optional overrides. */
   const buildSettingsObject = useCallback(
@@ -85,6 +123,9 @@ export function useSettings(): UseSettingsReturn {
       sourceLanguage,
       targetLanguage,
       speakerDetection,
+      asrProvider,
+      localWhisperModel,
+      localLlmModelCached,
       ...overrides
     }),
     [
@@ -95,7 +136,10 @@ export function useSettings(): UseSettingsReturn {
       translationModel,
       sourceLanguage,
       targetLanguage,
-      speakerDetection
+      speakerDetection,
+      asrProvider,
+      localWhisperModel,
+      localLlmModelCached
     ]
   );
 
@@ -144,8 +188,40 @@ export function useSettings(): UseSettingsReturn {
       if (settings.targetLanguage) setTargetLanguage(settings.targetLanguage);
       if (typeof settings.speakerDetection === 'boolean')
         setSpeakerDetection(settings.speakerDetection);
+      if (settings.asrProvider) setAsrProvider(settings.asrProvider);
+      if (settings.localWhisperModel)
+        setLocalWhisperModel(settings.localWhisperModel);
+      if (typeof settings.localLlmModelCached === 'boolean')
+        setLocalLlmModelCached(settings.localLlmModelCached);
       loaded.current = true;
     })();
+
+    const runtimeListener = (message: {
+      type: string;
+      percent?: number;
+      phase?: 'download' | 'warmup';
+      message?: string;
+      result?: HardwareCheckResult;
+    }) => {
+      if (message.type === 'LOCAL_LLM_PROGRESS') {
+        setLocalLlmDownloadError(null);
+        setLocalLlmDownloadPercent(message.percent ?? null);
+        setLocalLlmDownloadPhase(message.phase ?? null);
+      } else if (message.type === 'LOCAL_LLM_READY') {
+        setLocalLlmModelCached(true);
+        setLocalLlmDownloadPercent(null);
+        setLocalLlmDownloadPhase(null);
+        setLocalLlmDownloadError(null);
+      } else if (message.type === 'LOCAL_LLM_DOWNLOAD_FAILED') {
+        setLocalLlmDownloadPercent(null);
+        setLocalLlmDownloadPhase(null);
+        setLocalLlmDownloadError(message.message ?? 'Download failed');
+      } else if (message.type === 'LOCAL_LLM_HARDWARE_RESULT' && message.result) {
+        setLocalLlmHardwareResult(message.result);
+      }
+    };
+    chrome.runtime.onMessage.addListener(runtimeListener);
+    return () => chrome.runtime.onMessage.removeListener(runtimeListener);
   }, []);
 
   return {
@@ -159,6 +235,13 @@ export function useSettings(): UseSettingsReturn {
     speakerDetection,
     showKeys,
     keysPresent,
+    asrProvider,
+    localWhisperModel,
+    localLlmModelCached,
+    localLlmDownloadPercent,
+    localLlmDownloadPhase,
+    localLlmHardwareResult,
+    localLlmDownloadError,
     setGroqKey,
     setGeminiKey,
     setPrompt,
@@ -168,6 +251,8 @@ export function useSettings(): UseSettingsReturn {
     setTargetLanguage,
     setSpeakerDetection,
     setShowKeys,
+    setAsrProvider,
+    setLocalWhisperModel,
     flushSettings
   };
 }

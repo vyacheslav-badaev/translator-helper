@@ -63,6 +63,13 @@ function App() {
             translationModel={settings.translationModel}
             prompt={settings.prompt}
             speakerDetection={settings.speakerDetection}
+            asrProvider={settings.asrProvider}
+            localWhisperModel={settings.localWhisperModel}
+            localLlmModelCached={settings.localLlmModelCached}
+            localLlmDownloadPercent={settings.localLlmDownloadPercent}
+            localLlmDownloadPhase={settings.localLlmDownloadPhase}
+            localLlmHardwareResult={settings.localLlmHardwareResult}
+            localLlmDownloadError={settings.localLlmDownloadError}
             onToggleTranslation={translation.toggleTranslation}
             onShowKeysChange={settings.setShowKeys}
             onGroqKeyChange={settings.setGroqKey}
@@ -73,6 +80,20 @@ function App() {
             onTranslationModelChange={settings.setTranslationModel}
             onPromptChange={settings.setPrompt}
             onSpeakerDetectionChange={settings.setSpeakerDetection}
+            onAsrProviderChange={settings.setAsrProvider}
+            onLocalWhisperModelChange={settings.setLocalWhisperModel}
+            onCheckHardware={() => {
+              void chrome.runtime.sendMessage({
+                target: 'background',
+                type: 'LOCAL_LLM_CHECK_HARDWARE'
+              });
+            }}
+            onDownloadLocalModel={() => {
+              void chrome.runtime.sendMessage({
+                target: 'background',
+                type: 'LOCAL_LLM_DOWNLOAD'
+              });
+            }}
           />
         ) : (
           <HistoryTab

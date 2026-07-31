@@ -43,6 +43,19 @@ export default defineConfig({
           src: 'node_modules/onnxruntime-web/dist/*.mjs',
           dest: '.',
           rename: { stripBase: true }
+        },
+        // @huggingface/transformers pins its own onnxruntime-web build, whose
+        // WASM binaries differ from the top-level version used by the speaker
+        // embedder. Isolate them in a subfolder to avoid filename clobbering.
+        {
+          src: 'node_modules/@huggingface/transformers/node_modules/onnxruntime-web/dist/*.wasm',
+          dest: 'transformers',
+          rename: { stripBase: true }
+        },
+        {
+          src: 'node_modules/@huggingface/transformers/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded*.mjs',
+          dest: 'transformers',
+          rename: { stripBase: true }
         }
       ]
     })

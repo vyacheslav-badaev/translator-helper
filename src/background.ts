@@ -8,6 +8,7 @@ import type {
   OffscreenRequestMessage
 } from './types/messages';
 import type { TranscriptSegment } from './types/segment';
+import type { HardwareCheckResult } from './utils/hardwareCheck';
 import { loadSettings } from './storage/settings';
 import { saveSession } from './storage/db';
 import type { SessionData } from './storage/db';
@@ -15,9 +16,13 @@ import { TranslationQueue } from './utils/translationQueue';
 import {
   DEFAULT_TRANSLATION_MODEL,
   DEFAULT_SYSTEM_PROMPT,
+  LOCAL_SYSTEM_PROMPT,
+  DEFAULT_LOCAL_WHISPER_MODEL,
   MAX_SPEAKER_NAME_LENGTH,
   SOURCE_LANGUAGES,
-  TARGET_LANGUAGES
+  TARGET_LANGUAGES,
+  LOCAL_TRANSLATION_MODEL,
+  parseModelId
 } from './constants';
 import { debugLog, debugWarn, debugError } from './utils/debug';
 
@@ -31,11 +36,43 @@ import {
 } from './background/stateManager';
 import { resetIdleTimer, clearIdleTimer } from './background/idleTimer';
 
+type OffscreenStatusResponse = {
+  status: string;
+  message?: string;
+  result?: HardwareCheckResult;
+};
+
+/**
+ * Sends a message to the offscreen document and throws if it reports an error.
+ */
+async function sendOffscreenChecked(
+  msg: OffscreenRequestMessage
+): Promise<OffscreenStatusResponse> {
+  const resp = (await chrome.runtime.sendMessage(
+    msg
+  )) as OffscreenStatusResponse | undefined;
+  if (!resp || resp.status === 'error') {
+    throw new Error(
+      resp?.message ?? `Offscreen request ${msg.type} failed`
+    );
+  }
+  return resp;
+}
+
 /** Whether the translation pipeline is currently active. */
 let isTranslating = false;
 
+/** Whether the current session uses the local LLM for translation. */
+let isUsingLocalLlm = false;
+
 /** Guard flag to prevent concurrent toggle operations and race conditions. */
 let toggleInProgress = false;
+
+/**
+ * True while a local-model download or hardware check owns the offscreen
+ * document. Blocks Start Translation to avoid GPU/ORT contention.
+ */
+let localModelOpInProgress = false;
 
 /** Monotonic segment ID counter for the current session. */
 let nextSegmentId = 1;
@@ -129,6 +166,32 @@ chrome.commands.onCommand.addListener((command: string) => {
 });
 
 /**
+ * Privileged URLs that Chrome refuses to capture. `getMediaStreamId` still
+ * returns an ID for these tabs, so the refusal only surfaces later inside the
+ * offscreen document as an opaque "Error starting tab capture" DOMException.
+ */
+const UNCAPTURABLE_URL_PATTERNS = [
+  /^chrome:\/\//,
+  /^chrome-extension:\/\//,
+  /^chrome-untrusted:\/\//,
+  /^devtools:\/\//,
+  /^edge:\/\//,
+  /^about:/,
+  /^https:\/\/chromewebstore\.google\.com\//,
+  /^https:\/\/chrome\.google\.com\/webstore/
+];
+
+/** Returns a user-facing reason the tab cannot be captured, or null if it can. */
+function getTabCaptureBlocker(url: string | undefined): string | null {
+  if (!url) {
+    return 'The active tab has no accessible URL. Open a regular website tab and start again.';
+  }
+  return UNCAPTURABLE_URL_PATTERNS.some((pattern) => pattern.test(url))
+    ? 'Chrome does not allow audio capture on browser and extension pages. Open a regular website tab and start again.'
+    : null;
+}
+
+/**
  * Starts or stops the translation pipeline.
  * Handles offscreen document lifecycle, media stream capture, and settings injection.
  */
@@ -150,6 +213,12 @@ async function handleToggleTranslation(
 
   try {
     if (shouldStart) {
+      if (localModelOpInProgress) {
+        throw new Error(
+          'Local model download or GPU check is in progress. Wait until it finishes.'
+        );
+      }
+
       // 1. Prepare offscreen document for audio capture
       await setupOffscreenDocument();
 
@@ -162,6 +231,11 @@ async function handleToggleTranslation(
       }
       debugLog('Background', `Capturing tab: id=${tab.id}, url=${tab.url}`);
 
+      const captureBlocker = getTabCaptureBlocker(tab.url);
+      if (captureBlocker) {
+        throw new Error(captureBlocker);
+      }
+
       // 2. Obtain streamId to pass to offscreen document
       const streamId = await chrome.tabCapture.getMediaStreamId({
         targetTabId: tab.id
@@ -172,11 +246,18 @@ async function handleToggleTranslation(
       const settings = await loadSettings();
       const translationModel =
         settings.translationModel || DEFAULT_TRANSLATION_MODEL;
+      const { provider: translationProvider } = parseModelId(translationModel);
 
-      if (!settings.groqApiKey) {
+      const isLocalAsr = settings.asrProvider === 'local';
+      if (!isLocalAsr && !settings.groqApiKey) {
         throw new Error('Groq API key is missing (required for transcription)');
       }
-      if (translationModel.startsWith('gemini:') && !settings.geminiApiKey) {
+      if (translationProvider === 'groq' && !settings.groqApiKey) {
+        throw new Error(
+          'Groq API key is missing for the selected translation model'
+        );
+      }
+      if (translationProvider === 'gemini' && !settings.geminiApiKey) {
         throw new Error(
           'Gemini API key is missing for the selected translation model'
         );
@@ -189,21 +270,50 @@ async function handleToggleTranslation(
       const targetName =
         TARGET_LANGUAGES.find((l) => l.id === targetId)?.label || 'Russian';
 
-      const basePrompt = settings.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-      const finalPrompt = basePrompt
-        .replace(/\{\{source\}\}/g, sourceName)
-        .replace(/\{\{target\}\}/g, targetName);
+      const fillLanguages = (template: string) =>
+        template
+          .replace(/\{\{source\}\}/g, sourceName)
+          .replace(/\{\{target\}\}/g, targetName);
+
+      const finalPrompt = fillLanguages(
+        settings.systemPrompt || DEFAULT_SYSTEM_PROMPT
+      );
+      const localPrompt = fillLanguages(LOCAL_SYSTEM_PROMPT);
 
       currentSourceLang = sourceId;
       currentTargetLang = targetId;
 
       // 4. Initialize translation queue with latest settings
-      translationQueue.configure(
-        settings.geminiApiKey || '',
-        settings.groqApiKey,
-        finalPrompt,
-        translationModel
-      );
+      translationQueue.configure({
+        geminiApiKey: settings.geminiApiKey || '',
+        groqApiKey: settings.groqApiKey || '',
+        prompt: finalPrompt,
+        localPrompt,
+        model: translationModel
+      });
+
+      // 4a. Pre-load local LLM if selected
+      isUsingLocalLlm = translationProvider === 'local';
+      if (isUsingLocalLlm) {
+        if (!settings.localLlmModelCached) {
+          throw new Error(
+            `${LOCAL_TRANSLATION_MODEL.label} is not downloaded yet. Open Settings and download the model first.`
+          );
+        }
+        await sendOffscreenChecked({
+          target: 'offscreen',
+          type: 'LOCAL_LLM_LOAD'
+        });
+      }
+
+      // 4b. Pre-load local Whisper if selected
+      if (isLocalAsr) {
+        await sendOffscreenChecked({
+          target: 'offscreen',
+          type: 'LOCAL_WHISPER_LOAD',
+          modelId: settings.localWhisperModel ?? DEFAULT_LOCAL_WHISPER_MODEL
+        });
+      }
 
       // 5. Handle session resumption if segments were provided from history
       if (resumeSegments && resumeSegments.length > 0) {
@@ -260,14 +370,24 @@ async function handleToggleTranslation(
       };
       await chrome.runtime.sendMessage(message).catch(() => undefined);
 
-      // 2. Cleanup resources
+      // 2. Unload local LLM if it was active
+      if (isUsingLocalLlm) {
+        const unloadMsg: OffscreenRequestMessage = {
+          target: 'offscreen',
+          type: 'LOCAL_LLM_UNLOAD'
+        };
+        await chrome.runtime.sendMessage(unloadMsg).catch(() => undefined);
+        isUsingLocalLlm = false;
+      }
+
+      // 3. Cleanup resources
       await closeOffscreenDocument();
       translationQueue.clear();
       clearIdleTimer();
       isTranslating = false;
       debugLog('Background', 'Translation stopped successfully');
 
-      // 3. Save the current session to history (IndexedDB)
+      // 4. Save the current session to history (IndexedDB)
       if (currentSessionSegments.length > 0) {
         const titleText =
           currentSessionSegments[0].originalText.trim() || 'Empty Session';
@@ -287,7 +407,7 @@ async function handleToggleTranslation(
         );
         currentSessionSegments = [];
       }
-      
+
       // Clear speaker names after they have been saved
       sessionSpeakerNames = {};
     }
@@ -295,6 +415,7 @@ async function handleToggleTranslation(
     debugError('Background', 'Failed to toggle translation state:', error);
     if (shouldStart) {
       isTranslating = false;
+      isUsingLocalLlm = false;
       await closeOffscreenDocument();
     }
     // Inform UI about the failure
@@ -424,6 +545,111 @@ chrome.runtime.onMessage.addListener(
       ) {
         await broadcastToActiveTabs({ type: request.type });
         sendResponse({ status: 'forwarded' });
+        return;
+      }
+
+      if (request.type === 'LOCAL_LLM_TRANSLATE_RESULT') {
+        translationQueue.resolveLocalTranslation(
+          request.requestId,
+          request.result,
+          request.error
+        );
+        sendResponse({ status: 'resolved' });
+        return;
+      }
+
+      if (request.type === 'LOCAL_LLM_PROGRESS') {
+        chrome.runtime
+          .sendMessage({
+            type: 'LOCAL_LLM_PROGRESS',
+            percent: request.percent,
+            phase: request.phase
+          })
+          .catch(() => undefined);
+        sendResponse({ status: 'forwarded' });
+        return;
+      }
+
+      if (request.type === 'LOCAL_LLM_DOWNLOAD') {
+        if (isTranslating || toggleInProgress || localModelOpInProgress) {
+          sendResponse({ status: 'busy' });
+          return;
+        }
+        localModelOpInProgress = true;
+        chrome.runtime
+          .sendMessage({
+            type: 'LOCAL_LLM_PROGRESS',
+            percent: 0,
+            phase: 'download'
+          })
+          .catch(() => undefined);
+        try {
+          await setupOffscreenDocument();
+          const resp = await sendOffscreenChecked({
+            target: 'offscreen',
+            type: 'LOCAL_LLM_DOWNLOAD'
+          });
+          // Offscreen documents may only use chrome.runtime, so persisting the
+          // cache flag and announcing readiness both belong to the background.
+          await chrome.storage.local.set({ localLlmModelCached: true });
+          chrome.runtime
+            .sendMessage({ type: 'LOCAL_LLM_READY' })
+            .catch(() => undefined);
+          sendResponse({ status: resp.status });
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : 'LLM download failed';
+          chrome.runtime
+            .sendMessage({ type: 'LOCAL_LLM_DOWNLOAD_FAILED', message })
+            .catch(() => undefined);
+          sendResponse({ status: 'error', message });
+        } finally {
+          await closeOffscreenDocument();
+          localModelOpInProgress = false;
+        }
+        return;
+      }
+
+      if (request.type === 'LOCAL_LLM_CHECK_HARDWARE') {
+        if (isTranslating || toggleInProgress || localModelOpInProgress) {
+          sendResponse({ status: 'busy' });
+          return;
+        }
+        localModelOpInProgress = true;
+        try {
+          await setupOffscreenDocument();
+          const resp = await sendOffscreenChecked({
+            target: 'offscreen',
+            type: 'LOCAL_LLM_CHECK_HARDWARE'
+          });
+          if (resp.result) {
+            chrome.runtime
+              .sendMessage({
+                type: 'LOCAL_LLM_HARDWARE_RESULT',
+                result: resp.result
+              })
+              .catch(() => undefined);
+          }
+          sendResponse({ status: 'done', result: resp.result });
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : 'Hardware check failed';
+          chrome.runtime
+            .sendMessage({
+              type: 'LOCAL_LLM_HARDWARE_RESULT',
+              result: {
+                supported: false,
+                maxBufferGb: 0,
+                gpuName: 'unknown',
+                reason: message
+              }
+            })
+            .catch(() => undefined);
+          sendResponse({ status: 'error', message });
+        } finally {
+          await closeOffscreenDocument();
+          localModelOpInProgress = false;
+        }
         return;
       }
 

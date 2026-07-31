@@ -29,6 +29,15 @@ export const DEFAULT_TARGET_LANGUAGE = 'ru';
 export const DEFAULT_SYSTEM_PROMPT =
   'You are a professional real-time translator. Translate the following text from {{source}} to {{target}}. Output ONLY the translated text without any other comments, quotes, or markdown formatting. Keep the translated text smooth and natural.';
 
+/**
+ * System prompt for the local model, deliberately separate from the
+ * user-editable one above. The cloud wording is long and leaves room for
+ * interpretation, which makes a sub-1B model emit commentary instead of a bare
+ * translation, so this variant is short and strictly imperative.
+ */
+export const LOCAL_SYSTEM_PROMPT =
+  'You are a translation engine. Translate the user message from {{source}} into {{target}}. Reply with the translation and nothing else: no explanations, no notes, no labels, no quotes, and never repeat the original text.';
+
 /** How long (ms) an error toast stays visible before auto-dismissing. */
 export const ERROR_TIMEOUT_MS = 5000;
 
@@ -44,7 +53,7 @@ export const GROQ_CHAT_COMPLETIONS_URL =
 // Translation model registry (multi-provider)
 // ---------------------------------------------------------------------------
 
-export type TranslationModelProvider = 'gemini' | 'groq';
+export type TranslationModelProvider = 'gemini' | 'groq' | 'local';
 
 export interface TranslationModel {
   id: string;
@@ -110,8 +119,41 @@ export const TRANSLATION_MODELS: TranslationModel[] = [
     provider: 'gemini',
     label: 'Gemini 3.1 Pro (Preview)',
     description: 'Next-gen flagship (preview)'
+  },
+  // --- Local ---
+  {
+    id: 'local:qwen3-0.6b',
+    provider: 'local',
+    label: 'Local: Qwen3 0.6B',
+    description: 'Offline · no API key · ~570 MB · requires WebGPU'
   }
 ];
+
+/**
+ * The only local translation model, referenced by the offscreen runtime and UI.
+ *
+ * Replacements must keep the ONNX weights either below ~1 GB in a single file
+ * or split into external `.onnx_data` shards. Larger single-file protobufs are
+ * parsed entirely inside the 32-bit ONNX Runtime WASM heap, which aborts with
+ * `std::bad_alloc` while creating the inference session.
+ */
+export const LOCAL_TRANSLATION_MODEL = {
+  /** Registry ID used in settings and `parseModelId`. */
+  id: 'local:qwen3-0.6b',
+  /** Hugging Face repository providing the ONNX weights. */
+  repoId: 'onnx-community/Qwen3-0.6B-ONNX',
+  label: 'Qwen3 0.6B',
+  downloadSizeLabel: '~570 MB'
+} as const;
+
+/**
+ * Local model IDs from earlier releases, mapped to the current one. Their
+ * cached weights are unusable, so migration also resets the cache flag.
+ */
+export const LEGACY_LOCAL_MODEL_IDS = [
+  'local:gemma-4-e2b',
+  'local:qwen3-1.7b'
+] as const;
 
 /** Default translation model for new installations. */
 export const DEFAULT_TRANSLATION_MODEL = 'groq:qwen/qwen3-32b';
@@ -130,8 +172,9 @@ export function parseModelId(id: string): {
   }
   const prefix = id.slice(0, colonIndex);
   const model = id.slice(colonIndex + 1);
-  const provider: TranslationModelProvider =
-    prefix === 'groq' ? 'groq' : 'gemini';
+  let provider: TranslationModelProvider = 'gemini';
+  if (prefix === 'groq') provider = 'groq';
+  else if (prefix === 'local') provider = 'local';
   return { provider, model };
 }
 
@@ -191,6 +234,62 @@ export const WHISPER_MODELS = [
     description: '216× real-time speed'
   }
 ] as const;
+
+// ---------------------------------------------------------------------------
+// Local Whisper (browser-side ASR)
+// ---------------------------------------------------------------------------
+
+/** Default ASR provider for new installations. */
+export const DEFAULT_ASR_PROVIDER = 'groq' as const;
+
+/** Available ASR provider options shown in Settings. */
+export const ASR_PROVIDERS = [
+  { id: 'groq', label: 'Groq (cloud)', description: 'Fast, requires API key' },
+  {
+    id: 'local',
+    label: 'Local Whisper',
+    description: 'Free, runs in browser · no API key'
+  }
+] as const;
+
+/**
+ * Available local Whisper variants. IDs must point at repositories that ship
+ * ONNX exports; the upstream `openai/*` repositories hold PyTorch weights only.
+ */
+export const LOCAL_WHISPER_MODELS = [
+  {
+    id: 'onnx-community/whisper-tiny',
+    label: 'Whisper Tiny',
+    description: '~97 MB · fastest · lower accuracy'
+  },
+  {
+    id: 'onnx-community/whisper-base',
+    label: 'Whisper Base',
+    description: '~147 MB · good balance of speed and accuracy'
+  }
+] as const;
+
+/** Hugging Face repository ID of a local Whisper variant. */
+export type LocalWhisperModelId = (typeof LOCAL_WHISPER_MODELS)[number]['id'];
+
+/** Default local Whisper model when asrProvider is 'local'. */
+export const DEFAULT_LOCAL_WHISPER_MODEL: LocalWhisperModelId =
+  'onnx-community/whisper-base';
+
+/** Whisper repository IDs from earlier releases, mapped to their ONNX mirror. */
+const LEGACY_LOCAL_WHISPER_MODEL_IDS: Record<string, LocalWhisperModelId> = {
+  'openai/whisper-tiny': 'onnx-community/whisper-tiny',
+  'openai/whisper-base': 'onnx-community/whisper-base'
+};
+
+/** Normalizes a persisted Whisper model ID, migrating retired repositories. */
+export function resolveLocalWhisperModel(value: unknown): LocalWhisperModelId {
+  if (typeof value !== 'string') return DEFAULT_LOCAL_WHISPER_MODEL;
+  const migrated = LEGACY_LOCAL_WHISPER_MODEL_IDS[value];
+  if (migrated) return migrated;
+  const known = LOCAL_WHISPER_MODELS.find((model) => model.id === value);
+  return known ? known.id : DEFAULT_LOCAL_WHISPER_MODEL;
+}
 
 // ---------------------------------------------------------------------------
 // Auto-shutdown on inactivity

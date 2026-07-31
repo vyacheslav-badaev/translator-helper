@@ -15,7 +15,12 @@ import {
   DEFAULT_WHISPER_MODEL,
   DEFAULT_SOURCE_LANGUAGE,
   DEFAULT_TARGET_LANGUAGE,
-  DEFAULT_SPEAKER_DETECTION
+  DEFAULT_SPEAKER_DETECTION,
+  DEFAULT_ASR_PROVIDER,
+  DEFAULT_LOCAL_WHISPER_MODEL,
+  resolveLocalWhisperModel,
+  LOCAL_TRANSLATION_MODEL,
+  LEGACY_LOCAL_MODEL_IDS
 } from '../constants';
 import type { StoredSettings } from '../types/settings';
 import { debugLog, debugWarn } from '../utils/debug';
@@ -30,7 +35,10 @@ const ALL_FIELDS: Array<keyof StoredSettings> = [
   'translationModel',
   'sourceLanguage',
   'targetLanguage',
-  'speakerDetection'
+  'speakerDetection',
+  'localLlmModelCached',
+  'asrProvider',
+  'localWhisperModel'
 ];
 
 /**
@@ -90,6 +98,19 @@ export async function loadSettings(): Promise<StoredSettings> {
     translationModel = DEFAULT_TRANSLATION_MODEL;
   }
 
+  // Retired local models leave behind weights for a different architecture,
+  // so the cached flag must not carry over to the replacement model.
+  const isLegacyLocalModel = (
+    LEGACY_LOCAL_MODEL_IDS as readonly string[]
+  ).includes(translationModel);
+  if (isLegacyLocalModel) {
+    debugLog(
+      'Settings',
+      `Migrated retired local model ${translationModel} → ${LOCAL_TRANSLATION_MODEL.id}`
+    );
+    translationModel = LOCAL_TRANSLATION_MODEL.id;
+  }
+
   if (!groqApiKey) debugWarn('Settings', 'Groq API key is missing');
   if (!geminiApiKey) debugWarn('Settings', 'Gemini API key is missing');
   debugLog('Settings', 'Settings loaded', {
@@ -115,6 +136,18 @@ export async function loadSettings(): Promise<StoredSettings> {
       ? values.speakerDetection
       : DEFAULT_SPEAKER_DETECTION;
 
+  const localLlmModelCached =
+    !isLegacyLocalModel && typeof values.localLlmModelCached === 'boolean'
+      ? values.localLlmModelCached
+      : false;
+
+  const asrProvider =
+    values.asrProvider === 'local' || values.asrProvider === 'groq'
+      ? values.asrProvider
+      : DEFAULT_ASR_PROVIDER;
+
+  const localWhisperModel = resolveLocalWhisperModel(values.localWhisperModel);
+
   return {
     groqApiKey,
     geminiApiKey,
@@ -124,7 +157,10 @@ export async function loadSettings(): Promise<StoredSettings> {
     translationModel,
     sourceLanguage,
     targetLanguage,
-    speakerDetection
+    speakerDetection,
+    localLlmModelCached,
+    asrProvider,
+    localWhisperModel
   };
 }
 
@@ -147,7 +183,10 @@ export async function saveSettings(settings: StoredSettings) {
     translationModel: settings.translationModel || DEFAULT_TRANSLATION_MODEL,
     sourceLanguage: settings.sourceLanguage || DEFAULT_SOURCE_LANGUAGE,
     targetLanguage: settings.targetLanguage || DEFAULT_TARGET_LANGUAGE,
-    speakerDetection: settings.speakerDetection ?? DEFAULT_SPEAKER_DETECTION
+    speakerDetection: settings.speakerDetection ?? DEFAULT_SPEAKER_DETECTION,
+    localLlmModelCached: settings.localLlmModelCached ?? false,
+    asrProvider: settings.asrProvider ?? DEFAULT_ASR_PROVIDER,
+    localWhisperModel: settings.localWhisperModel ?? DEFAULT_LOCAL_WHISPER_MODEL
   });
 
   debugLog('Settings', 'Settings saved successfully');

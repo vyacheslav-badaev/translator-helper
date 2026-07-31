@@ -5,6 +5,8 @@
 
 import type { StoredSettings } from './settings';
 import type { TranscriptSegment } from './segment';
+import type { HardwareCheckResult } from '../utils/hardwareCheck';
+import type { LocalWhisperModelId } from '../constants';
 
 /** Messages sent TO the background service worker (from popup or offscreen). */
 export type BackgroundRequestMessage =
@@ -31,7 +33,22 @@ export type BackgroundRequestMessage =
       name: string;
     }
   | { target: 'background'; type: 'VAD_SPEECH_START' }
-  | { target: 'background'; type: 'VAD_SPEECH_END' };
+  | { target: 'background'; type: 'VAD_SPEECH_END' }
+  | { target: 'background'; type: 'LOCAL_LLM_DOWNLOAD' }
+  | { target: 'background'; type: 'LOCAL_LLM_CHECK_HARDWARE' }
+  | {
+      target: 'background';
+      type: 'LOCAL_LLM_PROGRESS';
+      percent: number;
+      phase: 'download' | 'warmup';
+    }
+  | {
+      target: 'background';
+      type: 'LOCAL_LLM_TRANSLATE_RESULT';
+      requestId: string;
+      result: string | null;
+      error?: string;
+    };
 
 /** Messages sent TO the offscreen document (from background). */
 export type OffscreenRequestMessage =
@@ -41,7 +58,23 @@ export type OffscreenRequestMessage =
       streamId: string;
       settings: StoredSettings;
     }
-  | { target: 'offscreen'; type: 'STOP_RECORDING' };
+  | { target: 'offscreen'; type: 'STOP_RECORDING' }
+  | { target: 'offscreen'; type: 'LOCAL_LLM_DOWNLOAD' }
+  | { target: 'offscreen'; type: 'LOCAL_LLM_CHECK_HARDWARE' }
+  | { target: 'offscreen'; type: 'LOCAL_LLM_LOAD' }
+  | { target: 'offscreen'; type: 'LOCAL_LLM_UNLOAD' }
+  | {
+      target: 'offscreen';
+      type: 'LOCAL_LLM_TRANSLATE';
+      requestId: string;
+      text: string;
+      prompt: string;
+    }
+  | {
+      target: 'offscreen';
+      type: 'LOCAL_WHISPER_LOAD';
+      modelId: LocalWhisperModelId;
+    };
 
 /** Messages sent TO content scripts (from background, broadcast to active tabs). */
 export type ContentScriptMessage =
@@ -65,4 +98,15 @@ export type ContentScriptMessage =
       };
     }
   | { type: 'VAD_SPEECH_START' }
-  | { type: 'VAD_SPEECH_END' };
+  | { type: 'VAD_SPEECH_END' }
+  | {
+      type: 'LOCAL_LLM_PROGRESS';
+      percent: number;
+      phase: 'download' | 'warmup';
+    }
+  | { type: 'LOCAL_LLM_READY' }
+  | { type: 'LOCAL_LLM_DOWNLOAD_FAILED'; message: string }
+  | {
+      type: 'LOCAL_LLM_HARDWARE_RESULT';
+      result: HardwareCheckResult;
+    };
