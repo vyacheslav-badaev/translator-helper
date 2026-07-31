@@ -1,61 +1,77 @@
 # Real-Time Translator (Chrome Extension MV3)
 
-Chrome extension that captures active tab audio, transcribes speech in real time with **Groq Whisper** and translates it with **Google Gemini**, then renders translated segments in a draggable on-page overlay.
+Chrome extension that captures active tab audio, transcribes speech in real time, translates it, and renders segments in a draggable on-page overlay.
+
+**Transcription (ASR):** Groq Whisper (cloud) or local Whisper in the browser  
+**Translation:** Google Gemini, Groq LLMs, or a local WebGPU model (Qwen3 0.6B)
 
 ## Features
 
 ### Core
 
 - Real-time audio → transcription → translation pipeline
-- **Machine Learning VAD** (@ricky0123/vad-web) — audio is split at natural speech pauses with high accuracy
-- **Low Latency** — chunking optimized for dialogue (300ms silence detection)
+- **Machine Learning VAD** (`@ricky0123/vad-web`) — splits audio at natural speech pauses
+- Dialogue-oriented chunking (≈300 ms silence detection)
 - Global hotkey toggle: **Ctrl+Shift+L** (macOS: **⌘⇧L**)
 - Extension icon badge (`ON`) when translation is active
+- Proactive block for uncapturable tabs (`chrome://`, Web Store, extension pages, etc.)
+
+### Providers
+
+| Stage | Options |
+| ----- | ------- |
+| **ASR** | Groq Whisper (Large v3 / Turbo) · Local Whisper Tiny / Base (ONNX, ~97–147 MB) |
+| **Translation** | Gemini (2.5 / 3.x) · Groq (Qwen3, Llama, GPT-OSS) · Local Qwen3 0.6B (~570 MB, WebGPU) |
+
+- Local translation uses a fixed imperative system prompt (separate from the editable cloud prompt)
+- Local model download with progress, WebGPU hardware check, and cache flag in settings
+- Local ASR/LLM modules are **lazy-loaded** so the cloud path stays lean
 
 ### Popup Settings
 
-- **Session History** — automatically saves translation sessions to IndexedDB; supports Export to TXT, Delete, and Resume functionality
-- **Source & Target Languages** — drop-downs that dynamically inject into the system prompt
-- **Auto-save** — all changes persist automatically (debounced 800 ms)
-- Collapsible API key section with ✓/missing indicators
-- Multi-provider **Translation models**: **Gemini** (2.5 Flash, 2.5 Flash Lite, 2.5 Pro, 3.1 Pro) and **Groq** (Llama 3 models)
-- Selectable **Whisper model** (Large v3, Large v3 Turbo)
-- **Speaker Detection (Beta)** toggle for local diarization
-- Custom system prompt for translation
-- Start/Stop button disabled until both API keys are provided
+- **Session History** — IndexedDB; export TXT, delete, resume
+- **Source & Target Languages** — injected into the system prompt (`{{source}}` / `{{target}}`)
+- **Auto-save** — debounced ≈800 ms
+- API keys with ✓ / missing indicators (only required keys for the selected providers)
+- ASR provider switch (Groq vs Local Whisper)
+- Multi-provider translation model list
+- Local model panel: download, hardware check, cache status
+- Speaker Detection (Beta) for local diarization
+- Custom system prompt for **cloud** translation
+- Start disabled while a local model is downloading or required keys/cache are missing
 
 ### Content Overlay
 
-- Draggable and **resizable translation panel** in Shadow DOM — isolated from page styles.
-- Each segment shows translated text; tap to toggle original transcript.
-- **Speaker Identification** — individual segments are tagged with speaker badges when diarization is enabled.
-- **Visual Voice Indicators** — Heartbeat pulse in the header (red dot) and audio equalizer in the footer which animates in sync with speech.
-- **Analytics Footer** — Real-time telemetry showing transcription segments processed, queue length, and average latency (transcription & translation).
-- **Copy-to-clipboard** per segment, **clear history** button.
-- Smooth **fade-in** animation for new segments, CSS loading spinner while translating.
-- Custom thin scrollbar inside the panel.
+- Draggable and **resizable** panel in Shadow DOM
+- Tap a segment to toggle original vs translation
+- Speaker badges when diarization is enabled
+- Heartbeat pulse + footer equalizer synced with speech
+- Analytics footer: chunks processed, queue length, avg transcription / translation latency
+- Per-segment copy, clear history, fade-in for new segments
 
 ### Status Badge
 
-- Floating draggable **Translator ON / OFF** badge.
-- Includes a red pulsating dot when active voice is detected.
-- **Auto-hides** 5 seconds after translation stops (fade-out animation) — no visual clutter while browsing.
-- Reappears instantly when translation starts.
+- Floating draggable **Translator ON / OFF** badge
+- Red pulse while speech is detected
+- Auto-hides 5 s after stop; reappears on start
 
 ### Reliability & Performance
 
-- **High Availability Fallbacks** — dynamically switches to alternative Gemini Flash models on 503, 429, or 500 errors.
-- **Rate-limit retry** with exponential backoff for Groq Whisper.
-- **Optimized Batching** — enqueues segments and processes them in a single prompt to minimize API calls and latency.
-- **Idle auto-shutdown** — translation stops automatically after 5 minutes of silence.
-- **Context Preservation** — Maintains a sliding window of recent transcripts to ensure translation accuracy.
+- Gemini fallbacks on 503 / 429 / 500
+- Groq Whisper retry with exponential backoff on 429
+- Cloud translation batching + sliding context window
+- Local translation: no batching / no prior context (better for small models)
+- Empty or echoed local outputs are discarded (segment stays untranslated)
+- Idle auto-shutdown after 5 minutes of silence
+- Concurrent Start blocked during local model download / hardware check
 
 ## Tech Stack
 
-- **Vite 8** + **@crxjs/vite-plugin** (HMR in development)
+- **Vite 8** + **@crxjs/vite-plugin**
 - **React 19** + **TypeScript 5.9**
-- **Tailwind CSS v4** (popup UI)
-- **idb** (IndexedDB wrapper) & **vad-web** (ONNX-driven VAD)
+- **Tailwind CSS v4** (popup)
+- **@huggingface/transformers** v4 (local LLM / Whisper)
+- **idb**, **vad-web**, **onnxruntime-web**
 - Chrome Extension **Manifest V3** + Offscreen Document
 
 ## Architecture
@@ -64,128 +80,86 @@ Chrome extension that captures active tab audio, transcribes speech in real time
 ┌─────────────┐   hotkey / popup   ┌────────────────────┐
 │   Popup UI  │ ──────────────────▸│  Background SW     │
 │  (App.tsx)  │                    │  (background.ts)   │
-└─────────────┘                    │                    │
-                                   │  TranslationQueue  │
+└─────────────┘                    │  TranslationQueue  │
                                    │  idle timer        │
                                    └──────┬─────────────┘
-                                          │ streamId
+                                          │ streamId / LOCAL_*
                                    ┌──────▾─────────────┐
                                    │  Offscreen Document │
-                                   │  (offscreen.ts)     │
-                                   │  ML VAD (vad-web)   │
+                                   │  VAD · ASR · LLM    │
+                                   │  (lazy local mods)  │
                                    └──────┬─────────────┘
-                                          │ TRANSCRIPTION_SEGMENT
+                                          │ segments / results
                                    ┌──────▾─────────────┐
                                    │  Content Script     │
                                    │  TranslationPanel   │
-                                   │  (Shadow DOM)       │
                                    └────────────────────┘
 ```
 
-### 1) Background Service Worker (`src/background.ts`)
+### 1) Background (`src/background.ts`)
 
-- Handles hotkey command and popup start/stop requests
-- Manages translation state and offscreen document lifecycle
-- Hosts `TranslationQueue` — rate-limited, batched Gemini translation with retry/backoff
-- Fallback models derived from `GEMINI_MODELS` constant (flash variants)
-- Idle timer: auto-stops translation after 5 min of no new segments
-- Auto-stops on critical API errors (Groq or Gemini)
-- Race-condition guard (`toggleInProgress`)
-- Sets action badge (`ON`) and broadcasts state to content scripts
+- Hotkey / popup start-stop, state, badge, idle timer
+- Offscreen lifecycle; owns `chrome.storage` writes for local model cache
+- Hosts `TranslationQueue` (cloud batching + local request/response)
+- Validates API keys / local cache before start
+- Blocks Start while a local model op owns the offscreen document
+- Rejects privileged URLs that Chrome cannot capture
 
-### 2) Offscreen Engine (`src/offscreen.ts`, `offscreen.html`)
+### 2) Offscreen (`src/offscreen.ts`)
 
-- Receives `streamId` from background and captures tab audio via `getUserMedia`
-- **Audio Passthrough** — captured audio routed back to speakers via `AudioContext` so users hear original content while translating
-- **Machine Learning VAD & Diarization pipeline**:
-  - Uses `@ricky0123/vad-web` (`MicVAD`) for Voice Activity Detection
-  - Computes speaker embeddings via local ONNX model (`wespeaker_resnet34`) concurrently with transcription
-  - Uses `silero_vad_v5.onnx` model with dialogue-optimized parameters
-  - **Dialogue Optimization**: `redemptionMs: 300`, `negativeSpeechThreshold: 0.45` for fast speech segmentation in conversations
-  - Dynamic `sourceLanguage` passed to Whisper (no longer hardcoded)
-  - Proper `myvad.destroy()` cleanup on stop
-- WAV-encoded audio chunks sent to Groq Whisper
-- Sequential chunk processing queue (prevents parallel API storms)
-- Forwards pipeline errors to background → content for user-visible toasts
+- Tab audio via `getUserMedia` + passthrough to speakers
+- ML VAD (`silero_vad_v5`) and optional speaker embeddings
+- ASR: Groq Whisper **or** local Whisper (`src/api/localWhisper.ts`)
+- Local LLM download / load / translate (`src/api/localLlm.ts`) — dynamic `import()`
+- Only `chrome.runtime` is available here (no `chrome.storage`)
 
 ### 3) API Layer
 
-- **`src/api/groq.ts`** — Whisper transcription and multi-provider translation via Groq Chat Completions API + retry with exponential backoff on 429
-- **`src/api/gemini.ts`** — Gemini translation with proper `system_instruction` field (128K+ token capacity vs 896 char limit) + context buffer
+| Module | Role |
+| ------ | ---- |
+| `src/api/groq.ts` | Cloud Whisper + Groq chat translation |
+| `src/api/gemini.ts` | Gemini translation + context buffer |
+| `src/api/localLlm.ts` | Qwen3-0.6B-ONNX via WebGPU (`q4f16`) |
+| `src/api/localWhisper.ts` | Browser ASR (`onnx-community/whisper-*`) |
 
 ### 4) Utilities
 
-- **`src/utils/translationQueue.ts`** — Rate-limited queue with batching, per-item retry, `sessionId`-based abort, fallback models derived from constants
-- **`src/utils/sentenceBuffer.ts`** — Segments raw transcription into sentences
-- **`src/utils/debug.ts`** — Conditional debug logging (`__DEBUG__` build flag)
+- `translationQueue.ts` — cloud batching / local one-by-one translate
+- `sentenceBuffer.ts`, `speakerEmbedder.ts`, `speakerClustering.ts`
+- `hardwareCheck.ts` — WebGPU probe for local LLM
+- `debug.ts` — `__DEBUG__` gated logs (`debugWarn` / `debugLog`); `debugError` always on
 
-### 5) Popup UI (`src/App.tsx`, `src/popup/`)
+### 5) Popup / Content
 
-```
-src/popup/
-  hooks/
-    useSettings.ts          — settings state, auto-save, flushSettings()
-    useTranslation.ts       — isActive, toggle, status toast, runtime listener
-    useHistory.ts           — sessions CRUD, export, resume
-  components/
-    PopupHeader.tsx         — gradient header with tabs and ACTIVE/OFF badge
-    StatusToast.tsx          — transient success/error banner
-    SettingsTab.tsx          — Start/Stop, API keys, languages, models, prompt
-    HistoryTab.tsx           — session list with Export/Resume/Delete
-```
-
-`App.tsx` is a thin orchestrator (~88 lines) that wires hooks to components.
-
-### 6) Content UI (`src/content.tsx`, `src/content/`)
-
-```
-src/content/
-  hooks/
-    useDraggable.ts          — generic pointer drag with viewport clamping
-    useTranslationMessages.ts — runtime message handler (segments, VAD, errors)
-  components/
-    StatusBadge.tsx           — floating ON/OFF pill with speech dot
-    ErrorToast.tsx            — red error banner above badge
-    PanelHeader.tsx           — draggable title bar with EN/RU, clear, minimize
-    PanelFooter.tsx           — segment count + equalizer visualization
-    SegmentRow.tsx            — single transcript segment with toggle
-  TranslationPanel.tsx        — orchestrator (~220 lines)
-```
-
-Injected on all pages inside Shadow DOM. Panel and badge are independently draggable.
-
-### 7) Shared Modules
-
-- `src/constants.ts` — timing, model lists, language lists, idle timeout
-- `src/types/messages.ts` — typed `chrome.runtime` message contracts
-- `src/types/segment.ts` — `TranscriptSegment` shape
-- `src/types/settings.ts` — `StoredSettings` shape
-- `src/storage/settings.ts` — settings persistence via `chrome.storage.local` (all 7 fields)
-- `src/storage/db.ts` — IndexedDB wrapper with cached singleton connection
+Unchanged layout under `src/popup/` and `src/content/` — settings now include ASR provider, local Whisper model, and local LLM download UI.
 
 ## Settings & Storage
 
-All settings are stored in **`chrome.storage.local`**:
+Persisted in **`chrome.storage.local`**:
 
-| Key              | Description                     |
-| ---------------- | ------------------------------- |
-| `groqApiKey`       | Groq API key for Whisper & Groq Translation |
-| `geminiApiKey`     | Google AI Studio key for Gemini             |
-| `systemPrompt`     | Custom translation prompt                   |
-| `whisperModel`     | Selected Whisper model id                   |
-| `translationModel` | Selected translation model id (Gemini/Groq) |
-| `sourceLanguage`   | Audio source language code                  |
-| `targetLanguage`   | Translation target language                 |
-| `speakerDetection` | Boolean to toggle ONNX diarization          |
+| Key | Description |
+| --- | ----------- |
+| `groqApiKey` | Groq (Whisper and/or Groq translation) |
+| `geminiApiKey` | Gemini translation |
+| `systemPrompt` | Editable cloud translation prompt |
+| `whisperModel` | Groq Whisper model id |
+| `translationModel` | Prefixed id (`groq:…` / `gemini:…` / `local:…`) |
+| `sourceLanguage` / `targetLanguage` | Language codes |
+| `speakerDetection` | Local diarization toggle |
+| `asrProvider` | `groq` \| `local` |
+| `localWhisperModel` | ONNX Whisper repo id |
+| `localLlmModelCached` | Local translation weights present |
+
+Session history lives in **IndexedDB** (`src/storage/db.ts`). Local model weights use the Transformers.js / browser cache (not IndexedDB).
 
 ## Getting Started
 
 ### Prerequisites
 
 - **Node.js 18+**
-- API keys:
-  - [Groq API Key](https://console.groq.com/keys) (free tier available, paid recommended)
-  - [Google AI Studio Key](https://aistudio.google.com/app/apikey)
+- For cloud ASR/translation: [Groq](https://console.groq.com/keys) and/or [Google AI Studio](https://aistudio.google.com/app/apikey)
+- For local translation: a GPU with **WebGPU** support; download ~570 MB once
+- For local ASR: download Whisper Tiny/Base on first use (~97–147 MB)
 
 ### Install
 
@@ -203,82 +177,51 @@ Load in Chrome:
 
 1. Open `chrome://extensions/`
 2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select the `dist` folder
+3. **Load unpacked** → select the `dist` folder
 
-### Production Build
+### Production / Debug / Lint
 
 ```bash
 npm run build
-```
-
-### Debug Build (with console logging)
-
-```bash
-npm run build:debug
-```
-
-### Lint
-
-```bash
+npm run build:debug   # enables debugWarn / debugLog
 npm run lint
 ```
 
 ## Runtime Flow
 
-1. User starts translation via popup button or hotkey (**Ctrl+Shift+L**)
-2. Background creates offscreen document and obtains `streamId` via `chrome.tabCapture`
-3. Offscreen captures tab audio via `getUserMedia`, routes passthrough to speakers, and pipes it to `MicVAD`
-4. ML VAD (`silero_vad_v5.onnx`) detects speech boundaries with 300ms silence threshold (optimized for dialogue)
-5. On speech end → VAD emits a `Float32Array` → encoded as WAV blob
-6. WAV blob → **Groq Whisper** transcription (with retry on 429)
-7. Transcription → `TRANSCRIPTION_SEGMENT` message → background
-8. Background broadcasts `NEW_SEGMENT` to content script and enqueues for **Gemini** translation
-9. `TranslationQueue` sends translation with context buffer → broadcasts `TRANSLATION_RESULT`
-10. Content script renders translated segment with fade-in animation
-11. If idle for 5 min or critical API error → auto-stop
+1. Start via popup or **Ctrl+Shift+L**
+2. Background checks tab URL, keys/cache, creates offscreen, gets `streamId`
+3. Offscreen captures tab audio, VAD segments speech → WAV
+4. ASR (Groq or local Whisper) → `TRANSCRIPTION_SEGMENT`
+5. Background broadcasts `NEW_SEGMENT` and enqueues translation
+6. Cloud: batched Gemini/Groq with context · Local: fixed prompt, no context
+7. `TRANSLATION_RESULT` → overlay update
+8. Idle 5 min or critical error → auto-stop
 
 ## Key Constants (`src/constants.ts`)
 
-| Constant           | Default   | Description                                  |
-| ------------------ | --------- | -------------------------------------------- |
-| `IDLE_TIMEOUT_MS`  | 300000 ms | Auto-stop after this much inactivity (5 min) |
-| `ERROR_TIMEOUT_MS` | 5000 ms   | Error toast display duration                 |
+| Constant | Notes |
+| -------- | ----- |
+| `IDLE_TIMEOUT_MS` | 300000 — idle auto-stop |
+| `ERROR_TIMEOUT_MS` | 5000 — error toast duration |
+| `LOCAL_TRANSLATION_MODEL` | `onnx-community/Qwen3-0.6B-ONNX` |
+| `LOCAL_SYSTEM_PROMPT` | Imperative prompt for local LLM only |
+| `DEFAULT_LOCAL_WHISPER_MODEL` | `onnx-community/whisper-base` |
 
-VAD parameters are configured directly in `offscreen.ts` via `MicVAD.new()` options:
-`positiveSpeechThreshold: 0.8`, `negativeSpeechThreshold: 0.45`, `redemptionMs: 300` (300ms silence for dialogue optimization).
+VAD (in `offscreen.ts`): `positiveSpeechThreshold: 0.8`, `negativeSpeechThreshold: 0.45`, `redemptionMs: 300`.
 
-## Extension Messages
+## Extension Messages (summary)
 
-### → Background (`BackgroundRequestMessage`)
+**→ Background:** `START_FROM_POPUP`, `STOP_FROM_POPUP`, `GET_STATUS`, `PIPELINE_ERROR`, `TRANSCRIPTION_SEGMENT`, `RENAME_SPEAKER`, `VAD_*`, `LOCAL_LLM_DOWNLOAD`, `LOCAL_LLM_CHECK_HARDWARE`, `LOCAL_LLM_PROGRESS`, `LOCAL_LLM_TRANSLATE_RESULT`
 
-| Type                    | Payload   | Source    |
-| ----------------------- | --------- | --------- |
-| `START_FROM_POPUP`      | —         | Popup     |
-| `STOP_FROM_POPUP`       | —         | Popup     |
-| `GET_STATUS`            | —         | Popup     |
-| `PIPELINE_ERROR`        | `message` | Offscreen |
-| `TRANSCRIPTION_SEGMENT` | `text`    | Offscreen |
+**→ Offscreen:** `START_RECORDING`, `STOP_RECORDING`, `LOCAL_LLM_*`, `LOCAL_WHISPER_LOAD`
 
-### → Offscreen (`OffscreenRequestMessage`)
+**→ Content:** `NEW_SEGMENT`, `TRANSLATION_RESULT`, `TRANSLATION_STATE`, `PIPELINE_ERROR`, `SPEAKER_NAMES`, `ANALYTICS_UPDATE`, `VAD_*`
 
-| Type              | Payload                | Source     |
-| ----------------- | ---------------------- | ---------- |
-| `START_RECORDING` | `streamId`, `settings` | Background |
-| `STOP_RECORDING`  | —                      | Background |
+## MV3 & Local-Model Notes
 
-### → Content Scripts (`ContentScriptMessage`)
-
-| Type                 | Payload                       | Source     |
-| -------------------- | ----------------------------- | ---------- |
-| `NEW_SEGMENT`        | `segment: TranscriptSegment`  | Background |
-| `TRANSLATION_RESULT` | `segmentId`, `translatedText` | Background |
-| `TRANSLATION_STATE`  | `isActive`                    | Background |
-| `PIPELINE_ERROR`     | `message`                     | Background |
-
-## MV3 Notes
-
-- Service workers **cannot** access DOM/WebRTC — all media capture lives in the offscreen document
-- Groq Whisper is a file-based REST endpoint (not WebSocket streaming)
-- Perceived latency = silence detection window + Groq round-trip + Gemini round-trip
-- `MediaRecorder.requestData()` flushes chunks without stopping the recorder
+- Service workers cannot use DOM/WebRTC — media and ML run in the offscreen document
+- Offscreen may only use `chrome.runtime`; cache flags are written by the background SW
+- Local LLM ONNX files must stay small enough for the WASM heap (≈&lt;1 GB single protobuf, or external shards)
+- Chrome cannot capture `chrome://`, extension pages, DevTools, or the Web Store
+- Perceived latency ≈ VAD silence window + ASR + translation RTT (local path is GPU-bound)
