@@ -22,3 +22,15 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Agent and AI assistant configs
+.antigravity/
+.windsurfrules
+.agents/
+.gemini/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
